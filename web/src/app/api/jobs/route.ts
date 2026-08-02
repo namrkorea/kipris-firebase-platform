@@ -63,6 +63,49 @@ function clientFingerprint(request: NextRequest, salt: string): string {
     .digest("hex");
 }
 
+async function triggerGitHubWorker(jobId: string): Promise<void> {
+  const token = process.env.GITHUB_ACTIONS_TOKEN?.trim();
+  if (!token) {
+    console.warn(
+      "GITHUB_ACTIONS_TOKEN이 없어 GitHub Worker 즉시 실행을 건너뜁니다. 예약 실행이 대기 작업을 처리합니다.",
+    );
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      "https://api.github.com/repos/namrkorea/kipris-public-platform/dispatches",
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-GitHub-Api-Version": "2026-03-10",
+        },
+        body: JSON.stringify({
+          event_type: "kipris-job-created",
+          client_payload: {
+            job_id: jobId,
+          },
+        }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(7000),
+      },
+    );
+
+    if (!response.ok) {
+      console.error(
+        "GitHub Worker dispatch failed:",
+        response.status,
+        await response.text(),
+      );
+    }
+  } catch (caught) {
+    console.error("GitHub Worker dispatch error:", caught);
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { supabaseUrl, secretKey, requestSalt } = serverConfig();
@@ -162,6 +205,8 @@ export async function POST(request: NextRequest) {
         { status: 500 },
       );
     }
+
+    await triggerGitHubWorker(String(row.id));
 
     return NextResponse.json(
       {
