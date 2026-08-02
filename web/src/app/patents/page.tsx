@@ -22,32 +22,21 @@ export default function PatentsPage() {
   async function search(searchText = "") {
     setMessage("검색 중...");
 
-    let request = supabase
-      .from("patents")
-      .select(
-        "id,application_number,invention_title,applicant_name,ipc_number,application_date,abstract,register_status",
-      )
-      .eq("is_public", true)
-      .order("created_at", { ascending: false })
-      .limit(50);
+    const { data, error } = await supabase.rpc("search_public_patents", {
+      p_query: searchText.trim(),
+      p_limit: 50,
+    });
 
-    const normalized = searchText.trim();
-    if (normalized) {
-      const safe = normalized.replace(/[,%()]/g, " ");
-      request = request.or(
-        `invention_title.ilike.%${safe}%,applicant_name.ilike.%${safe}%,ipc_number.ilike.%${safe}%,application_number.ilike.%${safe}%`,
-      );
-    }
-
-    const { data, error } = await request;
     if (error) {
+      console.error("Public patent search failed:", error);
       setMessage("검색 결과를 불러오지 못했습니다.");
       setPatents([]);
       return;
     }
 
-    setPatents(data ?? []);
-    setMessage((data?.length ?? 0) === 0 ? "검색 결과가 없습니다." : "");
+    const rows = (data ?? []) as Patent[];
+    setPatents(rows);
+    setMessage(rows.length === 0 ? "검색 결과가 없습니다." : "");
   }
 
   useEffect(() => {
