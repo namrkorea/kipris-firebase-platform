@@ -1,0 +1,62 @@
+# ==============================
+# Web / Next.js
+# ==============================
+web/node_modules/
+web/.next/
+web/out/
+web/.vercel/
+web/.env.local
+web/.env.*.local
+
+# ==============================
+# Worker / Python
+# ==============================
+worker/.venv/
+worker/__pycache__/
+worker/.env
+worker/logs/
+*.pyc
+*.pyo
+
+# ==============================
+# 모든 비밀 환경변수
+# ==============================
+.env
+.env.local
+.env.*.local
+
+# 예제 환경변수 파일은 GitHub에 포함
+!.env.example
+!web/.env.local.example
+!worker/.env.example
+
+# ==============================
+# 패치·백업·임시 파일
+# ==============================
+_backup*/
+_backup_*/
+_patch_files/
+patch_files/
+apply_*_patch.bat
+apply_*_patch.ps1
+worker_env_additions.txt
+MANIFEST.json
+*.zip
+
+# ==============================
+# 로그·캐시
+# ==============================
+*.log
+.cache/
+.pytest_cache/
+
+# ==============================
+# OS / IDE
+# ==============================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+apply_*.bat
+apply_*.ps1
