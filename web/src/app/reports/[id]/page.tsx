@@ -225,7 +225,7 @@ export default function ReportPage({
   }, [selectedFields]);
 
   if (!job) return <p className="notice">{message}</p>;
-
+  const jobId = job.id;
   const results = job.results ?? [];
   const title =
     job.report_title || storedJob?.reportTitle || "특허 검색·검토 결과";
@@ -239,7 +239,7 @@ export default function ReportPage({
 
   function pdfViewUrl(patentId: string): string {
     return `/api/jobs/${encodeURIComponent(
-      job.id,
+      jobId,
     )}/pdf/${encodeURIComponent(patentId)}?token=${encodeURIComponent(token)}`;
   }
 
