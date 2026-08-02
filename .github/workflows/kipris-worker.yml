@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
   schedule:
     # 즉시 실행이 실패했을 때 남은 대기 작업을 보완 처리합니다.
-    # 매시 정각 혼잡을 피하도록 7분과 37분에 실행합니다.
-    - cron: "7,37 * * * *"
+    # 매시 정각 혼잡을 피하고 Actions 사용량을 줄이기 위해 매시 17분에 실행합니다.
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
