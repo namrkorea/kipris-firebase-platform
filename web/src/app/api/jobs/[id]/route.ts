@@ -128,8 +128,10 @@ export async function GET(
             }
           : null;
       })
-      .filter((row): row is Record<string, unknown> => row !== null);
-
+  
+      .filter(
+             (row): row is NonNullable<typeof row> => row !== null,
+             );
     return NextResponse.json(
       { ...data, results },
       { headers: { "Cache-Control": "no-store" } },
