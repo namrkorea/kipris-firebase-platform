@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import AiPatentCompareWidget from "./AiPatentCompareWidget";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -31,6 +32,7 @@ export default function RootLayout({
         <footer className="site-footer">
           공개 특허정보를 수집·정리하는 검토 플랫폼
         </footer>
+        <AiPatentCompareWidget />
       </body>
     </html>
   );
