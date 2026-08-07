@@ -32,6 +32,21 @@ def required_env(name: str) -> str:
     return value
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    return min(max(value, minimum), maximum)
+
+
 SUPABASE_URL = required_env("SUPABASE_URL")
 SUPABASE_SECRET_KEY = required_env("SUPABASE_SECRET_KEY")
 KIPRIS_SERVICE_KEY = required_env("KIPRIS_SERVICE_KEY")
@@ -54,6 +69,8 @@ MAX_PDF_BYTES = min(
     max(int(os.getenv("MAX_PDF_BYTES", "52428800")), 1_000_000),
     100_000_000,
 )
+FETCH_DETAIL_XML = env_bool("FETCH_DETAIL_XML", False)
+PROGRESS_UPDATE_EVERY = env_int("PROGRESS_UPDATE_EVERY", 5, 1, 100)
 
 supabase: Client = create_client(
     SUPABASE_URL,
@@ -127,7 +144,6 @@ def upload_pdf(path: str, data: bytes) -> str:
             if response.status_code < 400:
                 return path
 
-            # Existing object or gateway-specific 400: try explicit replacement.
             if response.status_code == 400:
                 update_response = _storage_request("PUT", base_url, data)
                 if update_response.status_code < 400:
@@ -150,7 +166,6 @@ def upload_pdf(path: str, data: bytes) -> str:
         if attempt < STORAGE_MAX_RETRIES:
             time.sleep(min(2 ** attempt, 8))
 
-    # Final fallback: use a short unique path to avoid path/existing-object issues.
     digest = hashlib.sha256(data).hexdigest()[:12]
     fallback_path = f"fallback/{digest}.pdf"
     fallback_url = (
@@ -170,52 +185,52 @@ def upload_pdf(path: str, data: bytes) -> str:
 
     raise RuntimeError(f"Supabase Storage 업로드 실패(재시도 후 중단): {last_error}")
 
-def upsert_patent(
-    item: dict[str, Any],
-    *,
-    requested_by: str | None,
-    detail_xml: str,
-) -> str:
-    record = {
-        **item,
-        "detail_xml": detail_xml,
-        "is_public": True,
+
+def bulk_save_search_results(
+    job_id: str,
+    items: list[dict[str, Any]],
+) -> dict[str, str]:
+    response = supabase.rpc(
+        "bulk_save_patent_results",
+        {
+            "p_job_id": job_id,
+            "p_patents": items,
+        },
+    ).execute()
+
+    rows = response.data or []
+    patent_ids = {
+        str(row["application_number"]): str(row["patent_id"])
+        for row in rows
+        if row.get("application_number") and row.get("patent_id")
     }
-    if requested_by:
-        record["first_collected_by"] = requested_by
 
-    response = (
-        supabase.table("patents")
-        .upsert(record, on_conflict="application_number")
-        .execute()
-    )
-    data = response.data or []
-    if data and data[0].get("id"):
-        return str(data[0]["id"])
+    if len(patent_ids) < len(items):
+        application_numbers = [
+            str(item["application_number"])
+            for item in items
+            if item.get("application_number")
+        ]
+        if application_numbers:
+            lookup = (
+                supabase.table("patents")
+                .select("id,application_number")
+                .in_("application_number", application_numbers)
+                .execute()
+            )
+            for row in lookup.data or []:
+                if row.get("application_number") and row.get("id"):
+                    patent_ids[str(row["application_number"])] = str(row["id"])
 
-    lookup = (
-        supabase.table("patents")
-        .select("id")
-        .eq("application_number", item["application_number"])
-        .single()
-        .execute()
-    )
-    if not lookup.data or not lookup.data.get("id"):
-        raise RuntimeError("저장한 특허 ID를 확인할 수 없습니다.")
-    return str(lookup.data["id"])
+    return patent_ids
 
 
-def save_job_patent(job_id: str, patent_id: str, order: int) -> None:
+def save_detail_xml(patent_id: str, application_number: str) -> None:
+    detail_xml = kipris.get_detail_xml(application_number)
     (
-        supabase.table("job_patents")
-        .upsert(
-            {
-                "job_id": job_id,
-                "patent_id": patent_id,
-                "display_order": order,
-            },
-            on_conflict="job_id,patent_id",
-        )
+        supabase.table("patents")
+        .update({"detail_xml": detail_xml})
+        .eq("id", patent_id)
         .execute()
     )
 
@@ -224,7 +239,6 @@ def save_pdf(
     *,
     patent_id: str,
     application_number: str,
-    document_name: str,
     source_url: str,
 ) -> str:
     pdf_data, _ = kipris.download_pdf(source_url, MAX_PDF_BYTES)
@@ -233,46 +247,34 @@ def save_pdf(
     requested_path = f"{safe_app}/{safe_name}"
     storage_path = upload_pdf(requested_path, pdf_data)
 
-    (
-        supabase.table("patent_documents")
-        .upsert(
-            {
-                "patent_id": patent_id,
-                "document_type": "publication_pdf",
-                "storage_bucket": PDF_BUCKET,
-                "storage_path": storage_path,
-                "original_name": safe_name,
-                "byte_size": len(pdf_data),
-            },
-            on_conflict="patent_id,document_type",
-        )
-        .execute()
-    )
-
-    (
-        supabase.table("patents")
-        .update({"pdf_storage_path": storage_path})
-        .eq("id", patent_id)
-        .execute()
-    )
+    supabase.rpc(
+        "record_patent_pdf",
+        {
+            "p_patent_id": patent_id,
+            "p_storage_bucket": PDF_BUCKET,
+            "p_storage_path": storage_path,
+            "p_original_name": safe_name,
+            "p_byte_size": len(pdf_data),
+        },
+    ).execute()
 
     return storage_path
 
 
 def process_job(job: dict[str, Any]) -> None:
     job_id = str(job["id"])
-    raw_requested_by = job.get("requested_by")
-    requested_by = str(raw_requested_by) if raw_requested_by else None
     query_text = str(job["query_text"])
     search_field = str(job["search_field"])
     max_results = int(job["max_results"])
     download_pdf = bool(job["download_pdf"])
 
     logger.info(
-        "작업 시작 | id=%s | field=%s | query=%s",
+        "작업 시작 | id=%s | field=%s | query=%s | detail=%s | pdf=%s",
         job_id,
         search_field,
         query_text,
+        FETCH_DETAIL_XML,
+        download_pdf,
     )
 
     items = kipris.search(
@@ -281,26 +283,58 @@ def process_job(job: dict[str, Any]) -> None:
         max_results=max_results,
     )
 
-    update_job(
-        job_id,
-        {
-            "progress_total": len(items),
-            "progress_current": 0,
-            "result_count": 0,
-        },
-    )
+    patent_ids = bulk_save_search_results(job_id, items)
+    saved_count = len(patent_ids)
 
-    saved_count = 0
+    if not items:
+        update_job(
+            job_id,
+            {
+                "status": "completed",
+                "progress_current": 0,
+                "progress_total": 0,
+                "result_count": 0,
+                "error_message": None,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        logger.info("작업 완료 | id=%s | 검색 결과=0", job_id)
+        return
+
+    if not FETCH_DETAIL_XML and not download_pdf:
+        update_job(
+            job_id,
+            {
+                "status": "completed",
+                "progress_current": len(items),
+                "progress_total": len(items),
+                "result_count": saved_count,
+                "error_message": None,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        logger.info(
+            "작업 완료 | id=%s | 특허=%s | 상세/PDF 후처리 없음",
+            job_id,
+            saved_count,
+        )
+        return
+
     pdf_saved_count = 0
     item_errors: list[str] = []
     warnings: list[str] = []
 
     for index, item in enumerate(items, start=1):
-        application_number = item["application_number"]
-        try:
-            detail_xml = ""
+        application_number = str(item["application_number"])
+        patent_id = patent_ids.get(application_number)
+
+        if not patent_id:
+            item_errors.append(f"{application_number}: 저장된 특허 ID 확인 실패")
+            continue
+
+        if FETCH_DETAIL_XML:
             try:
-                detail_xml = kipris.get_detail_xml(application_number)
+                save_detail_xml(patent_id, application_number)
             except Exception as exc:
                 logger.warning(
                     "상세정보 수집 경고 | application=%s | %s",
@@ -309,48 +343,32 @@ def process_job(job: dict[str, Any]) -> None:
                 )
                 warnings.append(f"{application_number}: 상세정보 일부 누락")
 
-            patent_id = upsert_patent(
-                item,
-                requested_by=requested_by,
-                detail_xml=detail_xml,
-            )
-            save_job_patent(job_id, patent_id, index)
-            saved_count += 1
-
-            if download_pdf:
-                try:
-                    pdf_info = kipris.get_pdf_info(application_number)
-                    if pdf_info:
-                        document_name, source_url = pdf_info
-                        save_pdf(
-                            patent_id=patent_id,
-                            application_number=application_number,
-                            document_name=document_name,
-                            source_url=source_url,
-                        )
-                        pdf_saved_count += 1
-                except Exception as exc:
-                    logger.exception(
-                        "PDF 처리 경고 | application=%s",
-                        application_number,
+        if download_pdf:
+            try:
+                pdf_info = kipris.get_pdf_info(application_number)
+                if pdf_info:
+                    _, source_url = pdf_info
+                    save_pdf(
+                        patent_id=patent_id,
+                        application_number=application_number,
+                        source_url=source_url,
                     )
-                    warnings.append(f"{application_number}: PDF 저장 실패")
-        except Exception as exc:
-            logger.exception(
-                "개별 특허 저장 실패 | application=%s",
-                application_number,
-            )
-            item_errors.append(
-                f"{application_number}: {clean_error_message(exc)}"
-            )
+                    pdf_saved_count += 1
+            except Exception:
+                logger.exception(
+                    "PDF 처리 경고 | application=%s",
+                    application_number,
+                )
+                warnings.append(f"{application_number}: PDF 저장 실패")
 
-        update_job(
-            job_id,
-            {
-                "progress_current": index,
-                "result_count": saved_count,
-            },
-        )
+        if index % PROGRESS_UPDATE_EVERY == 0 or index == len(items):
+            update_job(
+                job_id,
+                {
+                    "progress_current": index,
+                    "result_count": saved_count,
+                },
+            )
 
     summary_parts: list[str] = []
     if warnings:
@@ -363,7 +381,7 @@ def process_job(job: dict[str, Any]) -> None:
         details = (warnings + item_errors)[:5]
         summary_parts.append(" / ".join(details))
 
-    status = "completed" if saved_count > 0 or not items else "failed"
+    status = "completed" if saved_count > 0 else "failed"
     update_job(
         job_id,
         {
@@ -383,6 +401,7 @@ def process_job(job: dict[str, Any]) -> None:
         len(warnings),
         len(item_errors),
     )
+
 
 def fail_job(job_id: str, exc: Exception) -> None:
     message = str(exc).strip() or exc.__class__.__name__

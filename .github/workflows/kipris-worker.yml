@@ -32,6 +32,9 @@ jobs:
       MAX_JOBS_PER_RUN: "5"
       WORKER_ID: github-${{ github.run_id }}-${{ github.run_attempt }}
       POLL_SECONDS: "2"
+      FETCH_DETAIL_XML: "false"
+      PROGRESS_UPDATE_EVERY: "5"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     steps:
       - name: Checkout repository
@@ -45,7 +48,7 @@ jobs:
           cache-dependency-path: worker/requirements.txt
 
       - name: Install worker packages
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: pip install --prefer-binary -r requirements.txt
 
       - name: Process queued KIPRIS jobs
         run: python github_worker.py

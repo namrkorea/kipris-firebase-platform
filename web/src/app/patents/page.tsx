@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
 
 type Patent = {
   id: string;
@@ -14,6 +13,11 @@ type Patent = {
   register_status: string | null;
 };
 
+type SearchResponse = {
+  data?: Patent[];
+  error?: string;
+};
+
 export default function PatentsPage() {
   const [query, setQuery] = useState("");
   const [patents, setPatents] = useState<Patent[]>([]);
@@ -22,32 +26,28 @@ export default function PatentsPage() {
   async function search(searchText = "") {
     setMessage("검색 중...");
 
-    let request = supabase
-      .from("patents")
-      .select(
-        "id,application_number,invention_title,applicant_name,ipc_number,application_date,abstract,register_status",
-      )
-      .eq("is_public", true)
-      .order("created_at", { ascending: false })
-      .limit(50);
+    try {
+      const params = new URLSearchParams({
+        q: searchText.trim(),
+        limit: "50",
+      });
+      const response = await fetch(`/api/patents?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as SearchResponse;
 
-    const normalized = searchText.trim();
-    if (normalized) {
-      const safe = normalized.replace(/[,%()]/g, " ");
-      request = request.or(
-        `invention_title.ilike.%${safe}%,applicant_name.ilike.%${safe}%,ipc_number.ilike.%${safe}%,application_number.ilike.%${safe}%`,
-      );
-    }
+      if (!response.ok) {
+        throw new Error(payload.error || "검색 요청에 실패했습니다.");
+      }
 
-    const { data, error } = await request;
-    if (error) {
+      const rows = payload.data ?? [];
+      setPatents(rows);
+      setMessage(rows.length === 0 ? "검색 결과가 없습니다." : "");
+    } catch (caught) {
+      console.error("Public patent search failed:", caught);
       setMessage("검색 결과를 불러오지 못했습니다.");
       setPatents([]);
-      return;
     }
-
-    setPatents(data ?? []);
-    setMessage((data?.length ?? 0) === 0 ? "검색 결과가 없습니다." : "");
   }
 
   useEffect(() => {
