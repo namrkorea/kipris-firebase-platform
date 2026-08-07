@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
 
 type Patent = {
   id: string;
@@ -14,6 +13,11 @@ type Patent = {
   register_status: string | null;
 };
 
+type SearchResponse = {
+  data?: Patent[];
+  error?: string;
+};
+
 export default function PatentsPage() {
   const [query, setQuery] = useState("");
   const [patents, setPatents] = useState<Patent[]>([]);
@@ -22,21 +26,28 @@ export default function PatentsPage() {
   async function search(searchText = "") {
     setMessage("검색 중...");
 
-    const { data, error } = await supabase.rpc("search_public_patents", {
-      p_query: searchText.trim(),
-      p_limit: 50,
-    });
+    try {
+      const params = new URLSearchParams({
+        q: searchText.trim(),
+        limit: "50",
+      });
+      const response = await fetch(`/api/patents?${params.toString()}`, {
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as SearchResponse;
 
-    if (error) {
-      console.error("Public patent search failed:", error);
+      if (!response.ok) {
+        throw new Error(payload.error || "검색 요청에 실패했습니다.");
+      }
+
+      const rows = payload.data ?? [];
+      setPatents(rows);
+      setMessage(rows.length === 0 ? "검색 결과가 없습니다." : "");
+    } catch (caught) {
+      console.error("Public patent search failed:", caught);
       setMessage("검색 결과를 불러오지 못했습니다.");
       setPatents([]);
-      return;
     }
-
-    const rows = (data ?? []) as Patent[];
-    setPatents(rows);
-    setMessage(rows.length === 0 ? "검색 결과가 없습니다." : "");
   }
 
   useEffect(() => {
