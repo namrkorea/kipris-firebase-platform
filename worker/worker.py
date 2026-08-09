@@ -14,8 +14,10 @@ from urllib.parse import quote
 import requests
 from dotenv import load_dotenv
 
-
-from .kipris_client import KiprisClient, KiprisConfig, KiprisError
+try:
+    from .kipris_client import KiprisClient, KiprisConfig, KiprisError
+except ImportError:
+    from kipris_client import KiprisClient, KiprisConfig, KiprisError
 
 
 load_dotenv()
