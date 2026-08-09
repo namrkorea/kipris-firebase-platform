@@ -95,7 +95,7 @@ export default function JobsPage() {
 
     const confirmed = window.confirm(
       `“${title}”을(를) 요청·결과 목록에서 삭제할까요?\n\n` +
-        "현재 브라우저의 목록에서만 제거되며, Supabase에 저장된 특허와 PDF 원본은 삭제되지 않습니다.",
+        "현재 브라우저의 목록에서만 제거되며, Firebase에 저장된 특허와 PDF 원본은 삭제되지 않습니다.",
     );
 
     if (!confirmed) return;
@@ -111,7 +111,7 @@ export default function JobsPage() {
 
     const confirmed = window.confirm(
       `현재 표시된 요청·결과 ${rows.length}건을 모두 목록에서 삭제할까요?\n\n` +
-        "현재 브라우저의 목록만 비워지며, Supabase에 저장된 특허와 PDF 원본은 삭제되지 않습니다.",
+        "현재 브라우저의 목록만 비워지며, Firebase에 저장된 특허와 PDF 원본은 삭제되지 않습니다.",
     );
 
     if (!confirmed) return;
@@ -145,7 +145,7 @@ export default function JobsPage() {
 
       <p className="notice">
         작업 확인용 토큰과 출력 선택값은 현재 브라우저에만 저장됩니다. 목록 삭제는
-        이 브라우저에서만 적용되며, Supabase의 특허·PDF 원본은 그대로 유지됩니다.
+        이 브라우저에서만 적용되며, Firebase의 특허·PDF 원본은 그대로 유지됩니다.
       </p>
 
       {message && <p className="notice">{message}</p>}

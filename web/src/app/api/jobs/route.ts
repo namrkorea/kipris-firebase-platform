@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { createHash, randomUUID } from "node:crypto";
+import { Timestamp } from "firebase-admin/firestore";
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../../lib/firebase-admin";
 
 const ALLOWED_OUTPUT_FIELDS = new Set([
   "applicationNumber",
@@ -42,31 +43,126 @@ type FastPatent = {
 };
 
 function serverConfig() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
   const requestSalt = process.env.PUBLIC_REQUEST_SALT?.trim();
 
-  if (!supabaseUrl || !secretKey || !requestSalt) {
+  if (!requestSalt) {
     throw new Error(
-      "서버 환경변수 NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, PUBLIC_REQUEST_SALT를 확인하세요.",
+      "서버 환경변수 PUBLIC_REQUEST_SALT를 확인하세요.",
     );
   }
 
-  return {
-    supabaseUrl,
-    secretKey,
-    requestSalt,
-  };
+  return { requestSalt };
 }
 
-function createServerClient(supabaseUrl: string, secretKey: string) {
-  return createClient(supabaseUrl, secretKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
+class PublicRequestLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PublicRequestLimitError";
+  }
+}
+
+function patentDocumentId(applicationNumber: string): string {
+  return createHash("sha256")
+    .update(applicationNumber.trim())
+    .digest("hex")
+    .slice(0, 40);
+}
+
+async function createPublicJob(params: {
+  queryText: string;
+  searchField: string;
+  maxResults: number;
+  downloadPdf: boolean;
+  requesterHash: string;
+  reportTitle: string;
+  reviewPurpose: string;
+  outputFields: string[];
+}) {
+  const jobId = randomUUID();
+  const publicToken = randomUUID();
+
+  const now = Timestamp.now();
+  const nowMs = now.toMillis();
+  const oneHourAgoMs = nowMs - 60 * 60 * 1000;
+  const dayBucket = now.toDate().toISOString().slice(0, 10);
+
+  const limitRef = adminDb
+    .collection("public_request_limits")
+    .doc(params.requesterHash);
+
+  const jobRef = adminDb
+    .collection("collection_jobs")
+    .doc(jobId);
+
+  await adminDb.runTransaction(async (transaction) => {
+    const limitSnapshot = await transaction.get(limitRef);
+    const limit = limitSnapshot.data() ?? {};
+
+    const recentHourMs = Array.isArray(limit.recent_hour_ms)
+      ? limit.recent_hour_ms
+          .map((value: unknown) => Number(value))
+          .filter(
+            (value: number) =>
+              Number.isFinite(value) && value >= oneHourAgoMs,
+          )
+      : [];
+
+    const dailyCount =
+      limit.day_bucket === dayBucket
+        ? Number(limit.day_count ?? 0)
+        : 0;
+
+    if (recentHourMs.length >= 5) {
+      throw new PublicRequestLimitError(
+        "시간당 수집 요청 한도 5건을 초과했습니다.",
+      );
+    }
+
+    if (dailyCount >= 20) {
+      throw new PublicRequestLimitError(
+        "하루 수집 요청 한도 20건을 초과했습니다.",
+      );
+    }
+
+    transaction.set(
+      limitRef,
+      {
+        recent_hour_ms: [...recentHourMs, nowMs],
+        day_bucket: dayBucket,
+        day_count: dailyCount + 1,
+        updated_at: now,
+      },
+      { merge: true },
+    );
+
+    transaction.set(jobRef, {
+      public_token: publicToken,
+      requested_by: null,
+      query_text: params.queryText,
+      search_field: params.searchField,
+      max_results: params.maxResults,
+      download_pdf: params.downloadPdf,
+      requester_hash: params.requesterHash,
+      request_source: "public",
+      report_title:
+        params.reportTitle || "특허 검색·검토 결과",
+      review_purpose: params.reviewPurpose,
+      output_fields: params.outputFields,
+      status: "queued",
+      progress_total: params.maxResults,
+      progress_current: 0,
+      result_count: 0,
+      error_message: null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+    });
   });
+
+  return {
+    id: jobId,
+    public_token: publicToken,
+  };
 }
 
 function clientFingerprint(request: NextRequest, salt: string): string {
@@ -75,7 +171,8 @@ function clientFingerprint(request: NextRequest, salt: string): string {
     forwarded?.split(",")[0]?.trim() ||
     request.headers.get("x-real-ip")?.trim() ||
     "unknown";
-  const userAgent = request.headers.get("user-agent")?.slice(0, 300) || "unknown";
+  const userAgent =
+    request.headers.get("user-agent")?.slice(0, 300) || "unknown";
 
   return createHash("sha256")
     .update(`${salt}|${ip}|${userAgent}`)
@@ -111,7 +208,10 @@ function xmlText(xml: string, tag: string): string {
   return match ? decodeXml(match[1]) : "";
 }
 
-function parseKiprisItems(xml: string, maxResults: number): FastPatent[] {
+function parseKiprisItems(
+  xml: string,
+  maxResults: number,
+): FastPatent[] {
   const itemPattern =
     /<(?:[\w.-]+:)?item\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?item>/gi;
   const rows: FastPatent[] = [];
@@ -119,8 +219,18 @@ function parseKiprisItems(xml: string, maxResults: number): FastPatent[] {
 
   for (const match of xml.matchAll(itemPattern)) {
     const itemXml = match[1];
-    const applicationNumber = xmlText(itemXml, "applicationNumber");
-    if (!applicationNumber || seen.has(applicationNumber)) continue;
+    const applicationNumber = xmlText(
+      itemXml,
+      "applicationNumber",
+    );
+
+    if (
+      !applicationNumber ||
+      seen.has(applicationNumber)
+    ) {
+      continue;
+    }
+
     seen.add(applicationNumber);
 
     const raw = {
@@ -134,7 +244,10 @@ function parseKiprisItems(xml: string, maxResults: number): FastPatent[] {
       applicationDate: xmlText(itemXml, "applicationDate"),
       openNumber: xmlText(itemXml, "openNumber"),
       openDate: xmlText(itemXml, "openDate"),
-      publicationNumber: xmlText(itemXml, "publicationNumber"),
+      publicationNumber: xmlText(
+        itemXml,
+        "publicationNumber",
+      ),
       publicationDate: xmlText(itemXml, "publicationDate"),
       astrtCont: xmlText(itemXml, "astrtCont"),
       drawing: xmlText(itemXml, "drawing"),
@@ -160,7 +273,9 @@ function parseKiprisItems(xml: string, maxResults: number): FastPatent[] {
       raw_search_json: raw,
     });
 
-    if (rows.length >= maxResults) break;
+    if (rows.length >= maxResults) {
+      break;
+    }
   }
 
   return rows;
@@ -171,161 +286,169 @@ async function searchKiprisFast(
   queryText: string,
   maxResults: number,
 ): Promise<FastPatent[] | null> {
-  const serviceKey = process.env.KIPRIS_SERVICE_KEY?.trim();
-  const searchUrl = process.env.KIPRIS_SEARCH_URL?.trim();
-  if (!serviceKey || !searchUrl) return null;
+  const serviceKey =
+    process.env.KIPRIS_SERVICE_KEY?.trim();
+  const searchUrl =
+    process.env.KIPRIS_SEARCH_URL?.trim();
+
+  if (!serviceKey || !searchUrl) {
+    return null;
+  }
 
   const url = new URL(searchUrl);
   url.searchParams.set("ServiceKey", serviceKey);
   url.searchParams.set(searchField, queryText);
   url.searchParams.set("pageNo", "1");
-  url.searchParams.set("numOfRows", String(maxResults));
+  url.searchParams.set(
+    "numOfRows",
+    String(maxResults),
+  );
   url.searchParams.set("sortSpec", "PD");
   url.searchParams.set("descSort", "true");
 
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+
+  for (
+    let attempt = 1;
+    attempt <= 2;
+    attempt += 1
+  ) {
     try {
       const response = await fetch(url, {
         cache: "no-store",
         headers: {
           Accept: "application/xml,text/xml,*/*",
-          "User-Agent": "KIPRIS-Public-Platform/1.0",
+          "User-Agent":
+            "KIPRIS-Public-Platform/1.0",
         },
         signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) {
-        throw new Error(`KIPRIS HTTP ${response.status}`);
-      }
-
-      const xml = (await response.text()).trim();
-      if (!xml) throw new Error("KIPRIS가 빈 응답을 반환했습니다.");
-
-      const resultCode = xmlText(xml, "resultCode");
-      if (resultCode && resultCode !== "00" && resultCode !== "0") {
         throw new Error(
-          `KIPRIS 오류 ${resultCode}: ${xmlText(xml, "resultMsg") || "알 수 없는 오류"}`,
+          `KIPRIS HTTP ${response.status}`,
         );
       }
 
-      return parseKiprisItems(xml, maxResults);
+      const xml =
+        (await response.text()).trim();
+
+      if (!xml) {
+        throw new Error(
+          "KIPRIS가 빈 응답을 반환했습니다.",
+        );
+      }
+
+      const resultCode =
+        xmlText(xml, "resultCode");
+
+      if (
+        resultCode &&
+        resultCode !== "00" &&
+        resultCode !== "0"
+      ) {
+        throw new Error(
+          `KIPRIS 오류 ${resultCode}: ${
+            xmlText(xml, "resultMsg") ||
+            "알 수 없는 오류"
+          }`,
+        );
+      }
+
+      return parseKiprisItems(
+        xml,
+        maxResults,
+      );
     } catch (caught) {
       lastError = caught;
+
       if (attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) =>
+          setTimeout(resolve, 500),
+        );
       }
     }
   }
 
   throw lastError instanceof Error
     ? lastError
-    : new Error("KIPRIS 빠른 검색에 실패했습니다.");
+    : new Error(
+        "KIPRIS 빠른 검색에 실패했습니다.",
+      );
 }
 
 async function saveFastResults(
-  supabase: SupabaseClient,
   jobId: string,
   items: FastPatent[],
 ): Promise<void> {
-  let patentIds = new Map<string, string>();
+  const batch = adminDb.batch();
+  const now = Timestamp.now();
 
-  // 성능 SQL이 적용된 환경에서는 RPC 한 번으로 저장합니다.
-  const bulk = await supabase.rpc("bulk_save_patent_results", {
-    p_job_id: jobId,
-    p_patents: items,
-  });
+  const jobRef = adminDb
+    .collection("collection_jobs")
+    .doc(jobId);
 
-  if (!bulk.error) {
-    for (const row of (bulk.data ?? []) as Array<Record<string, unknown>>) {
-      const applicationNumber = String(row.application_number ?? "");
-      const patentId = String(row.patent_id ?? "");
-      if (applicationNumber && patentId) {
-        patentIds.set(applicationNumber, patentId);
-      }
-    }
-  } else {
-    // 004_performance.sql을 아직 적용하지 않은 경우에도 동작하도록
-    // 기존 테이블에 일괄 upsert하는 호환 경로를 둡니다.
-    console.warn("bulk_save_patent_results fallback:", bulk.error.message);
-    const records = items.map((item) => ({
-      ...item,
-      detail_xml: "",
-      is_public: true,
-    }));
+  for (
+    let index = 0;
+    index < items.length;
+    index += 1
+  ) {
+    const item = items[index];
 
-    if (records.length > 0) {
-      const saved = await supabase
-        .from("patents")
-        .upsert(records, { onConflict: "application_number" })
-        .select("id,application_number");
+    const patentId =
+      patentDocumentId(
+        item.application_number,
+      );
 
-      if (saved.error) throw saved.error;
-      for (const row of saved.data ?? []) {
-        if (row.application_number && row.id) {
-          patentIds.set(String(row.application_number), String(row.id));
-        }
-      }
+    const patentRef = adminDb
+      .collection("patents")
+      .doc(patentId);
 
-      if (patentIds.size < items.length) {
-        const lookup = await supabase
-          .from("patents")
-          .select("id,application_number")
-          .in(
-            "application_number",
-            items.map((item) => item.application_number),
-          );
-        if (lookup.error) throw lookup.error;
-        for (const row of lookup.data ?? []) {
-          if (row.application_number && row.id) {
-            patentIds.set(String(row.application_number), String(row.id));
-          }
-        }
-      }
+    batch.set(
+      patentRef,
+      {
+        ...item,
+        is_public: true,
+        updated_at: now,
+      },
+      { merge: true },
+    );
 
-      const links = items
-        .map((item, index) => {
-          const patentId = patentIds.get(item.application_number);
-          return patentId
-            ? {
-                job_id: jobId,
-                patent_id: patentId,
-                display_order: index + 1,
-              }
-            : null;
-        })
-        .filter((row): row is NonNullable<typeof row> => row !== null);
+    const resultRef = jobRef
+      .collection("results")
+      .doc(patentId);
 
-      if (links.length > 0) {
-        const linked = await supabase
-          .from("job_patents")
-          .upsert(links, { onConflict: "job_id,patent_id" });
-        if (linked.error) throw linked.error;
-      }
-    }
+    batch.set(
+      resultRef,
+      {
+        patent_id: patentId,
+        application_number:
+          item.application_number,
+        display_order: index + 1,
+        saved_at: now,
+      },
+      { merge: true },
+    );
   }
 
-  const resultCount = items.filter((item) =>
-    patentIds.has(item.application_number),
-  ).length;
-  const now = new Date().toISOString();
-  const completed = await supabase
-    .from("collection_jobs")
-    .update({
+  batch.set(
+    jobRef,
+    {
       status: "completed",
       progress_total: items.length,
       progress_current: items.length,
-      result_count: resultCount,
+      result_count: items.length,
       error_message: null,
       completed_at: now,
-    })
-    .eq("id", jobId);
+      updated_at: now,
+    },
+    { merge: true },
+  );
 
-  if (completed.error) throw completed.error;
+  await batch.commit();
 }
 
 async function tryFastPath(
-  supabase: SupabaseClient,
   jobId: string,
   searchField: string,
   queryText: string,
@@ -333,23 +456,53 @@ async function tryFastPath(
   downloadPdf: boolean,
 ): Promise<boolean> {
   const configuredLimit = Number(
-    process.env.KIPRIS_FAST_PATH_MAX_RESULTS?.trim() || "30",
+    process.env.KIPRIS_FAST_PATH_MAX_RESULTS?.trim() ||
+      "30",
   );
-  const fastLimit = Number.isFinite(configuredLimit)
-    ? Math.min(Math.max(Math.trunc(configuredLimit), 1), 50)
+
+  const fastLimit = Number.isFinite(
+    configuredLimit,
+  )
+    ? Math.min(
+        Math.max(
+          Math.trunc(configuredLimit),
+          1,
+        ),
+        50,
+      )
     : 30;
 
-  if (downloadPdf || maxResults > fastLimit) return false;
+  if (
+    downloadPdf ||
+    maxResults > fastLimit
+  ) {
+    return false;
+  }
 
-  const items = await searchKiprisFast(searchField, queryText, maxResults);
-  if (items === null) return false;
+  const items = await searchKiprisFast(
+    searchField,
+    queryText,
+    maxResults,
+  );
 
-  await saveFastResults(supabase, jobId, items);
+  if (items === null) {
+    return false;
+  }
+
+  await saveFastResults(
+    jobId,
+    items,
+  );
+
   return true;
 }
 
-async function triggerGitHubWorker(jobId: string): Promise<void> {
-  const token = process.env.GITHUB_ACTIONS_TOKEN?.trim();
+async function triggerGitHubWorker(
+  jobId: string,
+): Promise<void> {
+  const token =
+    process.env.GITHUB_ACTIONS_TOKEN?.trim();
+
   if (!token) {
     console.warn(
       "GITHUB_ACTIONS_TOKEN이 없어 GitHub Worker 즉시 실행을 건너뜁니다. 예약 실행이 대기 작업을 처리합니다.",
@@ -359,23 +512,29 @@ async function triggerGitHubWorker(jobId: string): Promise<void> {
 
   try {
     const response = await fetch(
-      "https://api.github.com/repos/namrkorea/kipris-public-platform/dispatches",
+      "https://api.github.com/repos/namrkorea/kipris-firebase-platform/dispatches",
       {
         method: "POST",
         headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "X-GitHub-Api-Version": "2026-03-10",
+          Accept:
+            "application/vnd.github+json",
+          Authorization:
+            `Bearer ${token}`,
+          "Content-Type":
+            "application/json",
+          "X-GitHub-Api-Version":
+            "2026-03-10",
         },
         body: JSON.stringify({
-          event_type: "kipris-job-created",
+          event_type:
+            "kipris-job-created",
           client_payload: {
             job_id: jobId,
           },
         }),
         cache: "no-store",
-        signal: AbortSignal.timeout(5000),
+        signal:
+          AbortSignal.timeout(5000),
       },
     );
 
@@ -387,62 +546,113 @@ async function triggerGitHubWorker(jobId: string): Promise<void> {
       );
     }
   } catch (caught) {
-    console.error("GitHub Worker dispatch error:", caught);
+    console.error(
+      "GitHub Worker dispatch error:",
+      caught,
+    );
   }
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest,
+) {
   try {
-    const { supabaseUrl, secretKey, requestSalt } = serverConfig();
-    const body = (await request.json()) as Record<string, unknown>;
+    const { requestSalt } =
+      serverConfig();
+
+    const body =
+      (await request.json()) as Record<
+        string,
+        unknown
+      >;
 
     const queryText =
-      typeof body.queryText === "string" ? body.queryText.trim() : "";
+      typeof body.queryText === "string"
+        ? body.queryText.trim()
+        : "";
+
     const searchField =
-      typeof body.searchField === "string" ? body.searchField : "";
-    const maxResults = Number(body.maxResults);
-    const downloadPdf = body.downloadPdf !== false;
+      typeof body.searchField === "string"
+        ? body.searchField
+        : "";
+
+    const maxResults =
+      Number(body.maxResults);
+
+    const downloadPdf =
+      body.downloadPdf !== false;
+
     const reportTitle =
       typeof body.reportTitle === "string"
         ? body.reportTitle.trim()
         : "특허 검색·검토 결과";
+
     const reviewPurpose =
-      typeof body.reviewPurpose === "string" ? body.reviewPurpose.trim() : "";
-    const rawOutputFields = Array.isArray(body.outputFields)
-      ? body.outputFields
-      : [];
-    const outputFields = rawOutputFields.filter(
-      (value): value is string =>
-        typeof value === "string" && ALLOWED_OUTPUT_FIELDS.has(value),
-    );
+      typeof body.reviewPurpose === "string"
+        ? body.reviewPurpose.trim()
+        : "";
 
-    if (queryText.length < 2 || queryText.length > 200) {
-      return NextResponse.json(
-        { error: "검색어는 2자 이상 200자 이하로 입력하세요." },
-        { status: 400 },
+    const rawOutputFields =
+      Array.isArray(body.outputFields)
+        ? body.outputFields
+        : [];
+
+    const outputFields =
+      rawOutputFields.filter(
+        (value): value is string =>
+          typeof value === "string" &&
+          ALLOWED_OUTPUT_FIELDS.has(value),
       );
-    }
 
-    if (reportTitle.length > 100 || reviewPurpose.length > 500) {
+    if (
+      queryText.length < 2 ||
+      queryText.length > 200
+    ) {
       return NextResponse.json(
-        { error: "결과표 제목 또는 검토 목적의 입력 길이를 확인하세요." },
+        {
+          error:
+            "검색어는 2자 이상 200자 이하로 입력하세요.",
+        },
         { status: 400 },
       );
     }
 
     if (
-      rawOutputFields.length !== outputFields.length ||
-      outputFields.length > ALLOWED_OUTPUT_FIELDS.size
+      reportTitle.length > 100 ||
+      reviewPurpose.length > 500
     ) {
       return NextResponse.json(
-        { error: "결과표 출력 항목이 올바르지 않습니다." },
+        {
+          error:
+            "결과표 제목 또는 검토 목적의 입력 길이를 확인하세요.",
+        },
         { status: 400 },
       );
     }
 
-    if (!ALLOWED_FIELDS.has(searchField)) {
+    if (
+      rawOutputFields.length !==
+        outputFields.length ||
+      outputFields.length >
+        ALLOWED_OUTPUT_FIELDS.size
+    ) {
       return NextResponse.json(
-        { error: "지원하지 않는 검색 항목입니다." },
+        {
+          error:
+            "결과표 출력 항목이 올바르지 않습니다.",
+        },
+        { status: 400 },
+      );
+    }
+
+    if (
+      !ALLOWED_FIELDS.has(searchField)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "지원하지 않는 검색 항목입니다.",
+        },
         { status: 400 },
       );
     }
@@ -453,75 +663,99 @@ export async function POST(request: NextRequest) {
       maxResults > 100
     ) {
       return NextResponse.json(
-        { error: "수집 건수는 1건 이상 100건 이하로 선택하세요." },
+        {
+          error:
+            "수집 건수는 1건 이상 100건 이하로 선택하세요.",
+        },
         { status: 400 },
       );
     }
 
-    const requesterHash = clientFingerprint(request, requestSalt);
-    const supabase = createServerClient(supabaseUrl, secretKey);
-
-    const { data, error } = await supabase.rpc(
-      "create_public_collection_job",
-      {
-        p_query_text: queryText,
-        p_search_field: searchField,
-        p_max_results: maxResults,
-        p_download_pdf: downloadPdf,
-        p_requester_hash: requesterHash,
-        p_report_title: reportTitle || "특허 검색·검토 결과",
-        p_review_purpose: reviewPurpose,
-        p_output_fields:
-          outputFields.length > 0
-            ? outputFields
-            : Array.from(ALLOWED_OUTPUT_FIELDS),
-      },
-    );
-
-    if (error) {
-      const status = error.message.includes("한도") ? 429 : 500;
-      return NextResponse.json({ error: error.message }, { status });
-    }
-
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row?.id || !row?.public_token) {
-      return NextResponse.json(
-        { error: "작업 등록 결과를 확인할 수 없습니다." },
-        { status: 500 },
+    const requesterHash =
+      clientFingerprint(
+        request,
+        requestSalt,
       );
-    }
 
-    const jobId = String(row.id);
-    let fastPath = false;
-    try {
-      fastPath = await tryFastPath(
-        supabase,
-        jobId,
-        searchField,
+    const job =
+      await createPublicJob({
         queryText,
+        searchField,
         maxResults,
         downloadPdf,
-      );
+        requesterHash,
+        reportTitle:
+          reportTitle ||
+          "특허 검색·검토 결과",
+        reviewPurpose,
+        outputFields:
+          outputFields.length > 0
+            ? outputFields
+            : Array.from(
+                ALLOWED_OUTPUT_FIELDS,
+              ),
+      });
+
+    const jobId = job.id;
+
+    let fastPath = false;
+
+    try {
+      fastPath =
+        await tryFastPath(
+          jobId,
+          searchField,
+          queryText,
+          maxResults,
+          downloadPdf,
+        );
     } catch (caught) {
-      console.error("KIPRIS fast path failed; falling back to GitHub:", caught);
+      console.error(
+        "KIPRIS fast path failed; falling back to GitHub:",
+        caught,
+      );
     }
 
     if (!fastPath) {
-      await triggerGitHubWorker(jobId);
+      await triggerGitHubWorker(
+        jobId,
+      );
     }
 
     return NextResponse.json(
       {
         id: jobId,
-        token: String(row.public_token),
-        mode: fastPath ? "fast" : "queue",
+        token: job.public_token,
+        mode:
+          fastPath
+            ? "fast"
+            : "queue",
       },
       { status: 201 },
     );
   } catch (caught) {
-    console.error("Public job creation failed:", caught);
+    console.error(
+      "Public job creation failed:",
+      caught,
+    );
+
+    if (
+      caught instanceof
+      PublicRequestLimitError
+    ) {
+      return NextResponse.json(
+        {
+          error: caught.message,
+        },
+        { status: 429 },
+      );
+    }
+
     return NextResponse.json(
-      { error: "서버 설정 또는 연결을 확인하세요." },
+      {
+        error:
+          "서버 설정 또는 연결을 확인하세요.",
+      },
       { status: 500 },
     );
   }

@@ -1,40 +1,38 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../../../lib/firebase-admin";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function serverConfig() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
-
-  if (!supabaseUrl || !secretKey) {
-    throw new Error("Supabase 서버 환경변수가 비어 있습니다.");
+function toPlain(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
   }
 
-  return { supabaseUrl, secretKey };
-}
-
-function createServerClient(supabaseUrl: string, secretKey: string) {
-  return createClient(supabaseUrl, secretKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  });
-}
-
-function normalizePatentRelation(value: unknown): Record<string, unknown> | null {
   if (Array.isArray(value)) {
-    const first = value[0];
-    return first && typeof first === "object"
-      ? (first as Record<string, unknown>)
-      : null;
+    return value.map((item) => toPlain(item));
   }
-  return value && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : null;
+
+  if (typeof value !== "object") {
+    return value;
+  }
+
+  const maybeTimestamp = value as {
+    toDate?: () => Date;
+  };
+
+  if (typeof maybeTimestamp.toDate === "function") {
+    return maybeTimestamp.toDate().toISOString();
+  }
+
+  const source = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const [key, item] of Object.entries(source)) {
+    result[key] = toPlain(item);
+  }
+
+  return result;
 }
 
 export async function GET(
@@ -43,7 +41,10 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const token = request.nextUrl.searchParams.get("token")?.trim() || "";
+
+    const token =
+      request.nextUrl.searchParams.get("token")?.trim() || "";
+
     const includeResults =
       request.nextUrl.searchParams.get("includeResults") === "1";
 
@@ -54,92 +55,119 @@ export async function GET(
       );
     }
 
-    const { supabaseUrl, secretKey } = serverConfig();
-    const supabase = createServerClient(supabaseUrl, secretKey);
+    const jobRef = adminDb
+      .collection("collection_jobs")
+      .doc(id);
 
-    const { data, error } = await supabase
-      .from("collection_jobs")
-      .select(
-        "id,query_text,search_field,max_results,download_pdf,report_title,review_purpose,output_fields,status,progress_current,progress_total,result_count,error_message,created_at,started_at,completed_at",
-      )
-      .eq("id", id)
-      .eq("public_token", token)
-      .maybeSingle();
+    const jobSnapshot = await jobRef.get();
 
-    if (error) {
-      return NextResponse.json(
-        { error: "작업 상태를 확인하지 못했습니다." },
-        { status: 500 },
-      );
-    }
-
-    if (!data) {
+    if (!jobSnapshot.exists) {
       return NextResponse.json(
         { error: "작업을 찾을 수 없습니다." },
         { status: 404 },
       );
     }
 
-    if (!includeResults) {
-      return NextResponse.json(data, {
-        headers: { "Cache-Control": "no-store" },
-      });
-    }
+    const jobData = jobSnapshot.data() ?? {};
 
-    const { data: rows, error: resultError } = await supabase
-      .from("job_patents")
-      .select(
-        `display_order,
-        patents(
-          id,
-          application_number,
-          invention_title,
-          applicant_name,
-          ipc_number,
-          application_date,
-          open_number,
-          open_date,
-          publication_number,
-          publication_date,
-          register_number,
-          register_date,
-          register_status,
-          abstract,
-          pdf_storage_path
-        )`,
-      )
-      .eq("job_id", id)
-      .order("display_order", { ascending: true });
-
-    if (resultError) {
+    if (String(jobData.public_token ?? "") !== token) {
       return NextResponse.json(
-        { error: "특허 결과를 불러오지 못했습니다." },
-        { status: 500 },
+        { error: "작업을 찾을 수 없습니다." },
+        { status: 404 },
       );
     }
 
-    const results = (rows ?? [])
-      .map((row) => {
-        const patent = normalizePatentRelation(row.patents);
-        return patent
-          ? {
-              display_order: row.display_order,
-              ...patent,
+    const plainJob = toPlain(jobData) as Record<string, unknown>;
+
+    if (!includeResults) {
+      return NextResponse.json(
+        {
+          id: jobSnapshot.id,
+          ...plainJob,
+        },
+        {
+          headers: {
+            "Cache-Control": "no-store",
+          },
+        },
+      );
+    }
+
+    const resultsSnapshot = await jobRef
+      .collection("results")
+      .get();
+
+    const results = (
+      await Promise.all(
+        resultsSnapshot.docs.map(
+          async (resultDocument, index) => {
+            const relation = resultDocument.data();
+
+            const patentId = String(
+              relation.patent_id ??
+                resultDocument.id,
+            ).trim();
+
+            if (!patentId) {
+              return null;
             }
-          : null;
-      })
-  
-      .filter(
-             (row): row is NonNullable<typeof row> => row !== null,
-             );
+
+            const patentSnapshot = await adminDb
+              .collection("patents")
+              .doc(patentId)
+              .get();
+
+            if (!patentSnapshot.exists) {
+              return null;
+            }
+
+            const patent = toPlain(
+              patentSnapshot.data() ?? {},
+            ) as Record<string, unknown>;
+
+            const displayOrder =
+              typeof relation.display_order === "number"
+                ? relation.display_order
+                : index + 1;
+
+            return {
+              ...patent,
+              id: patentSnapshot.id,
+              display_order: displayOrder,
+            };
+          },
+        ),
+      )
+    ).filter((row) => row !== null);
+
+    results.sort(
+      (a, b) =>
+        Number(a.display_order ?? 0) -
+        Number(b.display_order ?? 0),
+    );
+
     return NextResponse.json(
-      { ...data, results },
-      { headers: { "Cache-Control": "no-store" } },
+      {
+        id: jobSnapshot.id,
+        ...plainJob,
+        results,
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      },
     );
   } catch (caught) {
-    console.error("Public job lookup failed:", caught);
+    console.error(
+      "Public job lookup failed:",
+      caught,
+    );
+
     return NextResponse.json(
-      { error: "서버 설정 또는 연결을 확인하세요." },
+      {
+        error: "서버 설정 또는 연결을 확인하세요.",
+      },
       { status: 500 },
     );
   }

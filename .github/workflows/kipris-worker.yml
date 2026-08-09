@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
   schedule:
     # 즉시 실행이 실패했을 때 남은 대기 작업을 보완 처리합니다.
-    # 매시 정각 혼잡을 피하고 Actions 사용량을 줄이기 위해 매시 17분에 실행합니다.
+    # 매시 17분에 실행합니다.
     - cron: "17 * * * *"
 
 permissions:
@@ -22,12 +22,13 @@ jobs:
         working-directory: worker
 
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       KIPRIS_SERVICE_KEY: ${{ secrets.KIPRIS_SERVICE_KEY }}
       KIPRIS_SEARCH_URL: ${{ secrets.KIPRIS_SEARCH_URL }}
       KIPRIS_DETAIL_URL: ${{ secrets.KIPRIS_DETAIL_URL }}
       KIPRIS_PDF_URL: ${{ secrets.KIPRIS_PDF_URL }}
+
+      FIREBASE_STORAGE_BUCKET: kipris-firebase-platform.firebasestorage.app
+
       PDF_BUCKET: patent-pdfs
       MAX_JOBS_PER_RUN: "5"
       WORKER_ID: github-${{ github.run_id }}-${{ github.run_attempt }}
@@ -46,6 +47,20 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: worker/requirements.txt
+
+      - name: Configure Firebase credentials
+        shell: bash
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "FIREBASE_SERVICE_ACCOUNT_JSON secret is missing."
+            exit 1
+          fi
+
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
+          python -m json.tool "$RUNNER_TEMP/firebase-service-account.json" > /dev/null
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json" >> "$GITHUB_ENV"
 
       - name: Install worker packages
         run: pip install --prefer-binary -r requirements.txt

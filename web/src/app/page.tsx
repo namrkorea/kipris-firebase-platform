@@ -31,14 +31,14 @@ export default function HomePage() {
         <article className="card">
           <h2>안전한 작업 대기열</h2>
           <p>
-            요청은 Vercel 서버에서 검증되고 Supabase 대기열에 저장됩니다.
+            요청은 Vercel 서버에서 검증되고 Firebase 대기열에 저장됩니다.
             익명 사용자의 직접 데이터베이스 쓰기는 차단됩니다.
           </p>
         </article>
         <article className="card">
           <h2>Python Worker</h2>
           <p>
-            KIPRIS 검색, XML 분석, PDF 다운로드 및 Supabase 저장을 순서대로
+            KIPRIS 검색, XML 분석, PDF 다운로드 및 Firebase 저장을 순서대로
             수행합니다.
           </p>
         </article>

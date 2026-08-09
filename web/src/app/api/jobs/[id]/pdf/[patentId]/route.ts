@@ -1,139 +1,161 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { adminBucket, adminDb } from "../../../../../../lib/firebase-admin";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function serverConfig() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
-  const pdfBucket = process.env.SUPABASE_PDF_BUCKET?.trim() || "patent-pdfs";
-
-  if (!supabaseUrl || !secretKey) {
-    throw new Error("Supabase 서버 환경변수가 비어 있습니다.");
-  }
-
-  return { supabaseUrl, secretKey, pdfBucket };
-}
-
-function createServerClient(supabaseUrl: string, secretKey: string) {
-  return createClient(supabaseUrl, secretKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  });
-}
+const PATENT_ID_PATTERN =
+  /^[0-9a-f]{40}$/i;
 
 export async function GET(
   request: NextRequest,
-  context: { params: Promise<{ id: string; patentId: string }> },
+  context: {
+    params: Promise<{
+      id: string;
+      patentId: string;
+    }>;
+  },
 ) {
   try {
     const { id, patentId } = await context.params;
-    const token = request.nextUrl.searchParams.get("token")?.trim() || "";
+
+    const token =
+      request.nextUrl.searchParams.get("token")?.trim() || "";
 
     if (
       !UUID_PATTERN.test(id) ||
-      !UUID_PATTERN.test(patentId) ||
-      !UUID_PATTERN.test(token)
+      !UUID_PATTERN.test(token) ||
+      !PATENT_ID_PATTERN.test(patentId)
     ) {
       return NextResponse.json(
-        { error: "PDF 확인 정보가 올바르지 않습니다." },
+        {
+          error: "PDF 확인 정보가 올바르지 않습니다.",
+        },
         { status: 400 },
       );
     }
 
-    const { supabaseUrl, secretKey, pdfBucket } = serverConfig();
-    const supabase = createServerClient(supabaseUrl, secretKey);
+    // 1. 작업 존재 여부 및 public_token 확인
+    const jobRef = adminDb
+      .collection("collection_jobs")
+      .doc(id);
 
-    const { data: job, error: jobError } = await supabase
-      .from("collection_jobs")
-      .select("id")
-      .eq("id", id)
-      .eq("public_token", token)
-      .maybeSingle();
+    const jobSnapshot = await jobRef.get();
 
-    if (jobError) {
-      console.error("PDF job lookup failed:", jobError);
+    if (!jobSnapshot.exists) {
       return NextResponse.json(
-        { error: "작업 정보를 확인하지 못했습니다." },
-        { status: 500 },
-      );
-    }
-
-    if (!job) {
-      return NextResponse.json(
-        { error: "작업을 찾을 수 없거나 확인 토큰이 만료되었습니다." },
+        {
+          error: "작업을 찾을 수 없습니다.",
+        },
         { status: 404 },
       );
     }
 
-    const { data: relation, error: relationError } = await supabase
-      .from("job_patents")
-      .select("patent_id")
-      .eq("job_id", id)
-      .eq("patent_id", patentId)
-      .maybeSingle();
+    const jobData = jobSnapshot.data() ?? {};
 
-    if (relationError) {
-      console.error("PDF relation lookup failed:", relationError);
+    if (String(jobData.public_token ?? "") !== token) {
       return NextResponse.json(
-        { error: "작업과 특허의 연결 정보를 확인하지 못했습니다." },
-        { status: 500 },
-      );
-    }
-
-    if (!relation) {
-      return NextResponse.json(
-        { error: "이 작업에 포함된 특허가 아닙니다." },
+        {
+          error: "작업을 찾을 수 없습니다.",
+        },
         { status: 404 },
       );
     }
 
-    const { data: patent, error: patentError } = await supabase
-      .from("patents")
-      .select("pdf_storage_path")
-      .eq("id", patentId)
-      .maybeSingle();
+    // 2. 이 특허가 해당 작업의 결과인지 확인
+    const resultSnapshot = await jobRef
+      .collection("results")
+      .doc(patentId)
+      .get();
 
-    if (patentError) {
-      console.error("PDF patent lookup failed:", patentError);
+    if (!resultSnapshot.exists) {
       return NextResponse.json(
-        { error: "특허 PDF 정보를 확인하지 못했습니다." },
-        { status: 500 },
+        {
+          error: "이 작업에 포함된 특허가 아닙니다.",
+        },
+        { status: 404 },
       );
     }
 
-    const storagePath = patent?.pdf_storage_path?.trim();
+    // 3. 특허 문서에서 Firebase Storage 경로 조회
+    const patentSnapshot = await adminDb
+      .collection("patents")
+      .doc(patentId)
+      .get();
+
+    if (!patentSnapshot.exists) {
+      return NextResponse.json(
+        {
+          error: "특허 정보를 찾을 수 없습니다.",
+        },
+        { status: 404 },
+      );
+    }
+
+    const patent = patentSnapshot.data() ?? {};
+
+    const storagePath = String(
+      patent.pdf_storage_path ?? "",
+    ).trim();
+
     if (!storagePath) {
       return NextResponse.json(
-        { error: "저장된 PDF가 없습니다." },
+        {
+          error: "저장된 PDF가 없습니다.",
+        },
         { status: 404 },
       );
     }
 
-    const { data: signed, error: signedError } = await supabase.storage
-      .from(pdfBucket)
-      .createSignedUrl(storagePath, 300);
+    // 4. Firebase Storage에서 실제 PDF 확인
+    const file = adminBucket.file(storagePath);
 
-    if (signedError || !signed?.signedUrl) {
-      console.error("PDF signed URL creation failed:", signedError);
+    const [exists] = await file.exists();
+
+    if (!exists) {
       return NextResponse.json(
-        { error: "PDF 열기 주소를 만들지 못했습니다." },
-        { status: 500 },
+        {
+          error: "Firebase Storage에서 PDF를 찾을 수 없습니다.",
+        },
+        { status: 404 },
       );
     }
 
-    const response = NextResponse.redirect(signed.signedUrl, 302);
-    response.headers.set("Cache-Control", "private, no-store, max-age=0");
-    response.headers.set("Referrer-Policy", "no-referrer");
-    return response;
+    // 5. PDF 다운로드
+    const [pdfBuffer] = await file.download();
+
+    const originalName = String(
+      patent.pdf_original_name ??
+        `${patentId}.pdf`,
+    )
+      .replace(/["\r\n]/g, "")
+      .trim();
+
+    const pdfBody = Uint8Array.from(pdfBuffer);
+
+    return new NextResponse(pdfBody, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="${originalName}"`,
+        "Content-Length": String(pdfBuffer.length),
+        "Cache-Control": "private, no-store, max-age=0",
+        "Referrer-Policy": "no-referrer",
+      },
+    });
   } catch (caught) {
-    console.error("Public PDF view failed:", caught);
+    console.error(
+      "Firebase PDF view failed:",
+      caught,
+    );
+
     return NextResponse.json(
-      { error: "서버 설정 또는 Storage 연결을 확인하세요." },
+      {
+        error: "PDF 파일을 불러오지 못했습니다.",
+      },
       { status: 500 },
     );
   }

@@ -1,87 +1,161 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { adminDb } from "../../../lib/firebase-admin";
 
-const SELECT_FIELDS =
-  "id,application_number,invention_title,applicant_name,ipc_number,application_date,abstract,register_status";
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 100;
 
-function serverClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const secret = process.env.SUPABASE_SECRET_KEY?.trim();
-
-  if (!url || !secret) {
-    throw new Error(
-      "NEXT_PUBLIC_SUPABASE_URL 또는 SUPABASE_SECRET_KEY가 설정되지 않았습니다.",
-    );
-  }
-
-  return createClient(url, secret, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  });
-}
+type PatentRow = {
+  id: string;
+  application_number?: unknown;
+  invention_title?: unknown;
+  applicant_name?: unknown;
+  ipc_number?: unknown;
+  application_date?: unknown;
+  abstract?: unknown;
+  register_status?: unknown;
+  is_public?: boolean;
+  updated_at?: unknown;
+  [key: string]: unknown;
+};
 
 function safeSearchText(value: string): string {
   return value
     .trim()
     .slice(0, 100)
-    .replace(/[,%()]/g, " ")
-    .replace(/\s+/g, " ");
+    .toLowerCase();
+}
+
+function safeLimit(value: string | null): number {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_LIMIT;
+  }
+
+  return Math.min(
+    Math.max(Math.trunc(parsed), 1),
+    MAX_LIMIT,
+  );
+}
+
+function searchable(value: unknown): string {
+  return String(value ?? "").toLowerCase();
+}
+
+function timestampMillis(value: unknown): number {
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+
+  const timestamp = value as {
+    toMillis?: () => number;
+  };
+
+  if (typeof timestamp.toMillis === "function") {
+    return timestamp.toMillis();
+  }
+
+  return 0;
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = serverClient();
-    const q = safeSearchText(request.nextUrl.searchParams.get("q") ?? "");
-    const requestedLimit = Number(request.nextUrl.searchParams.get("limit") ?? 50);
-    const limit = Number.isFinite(requestedLimit)
-      ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 100)
-      : 50;
+    const q = safeSearchText(
+      request.nextUrl.searchParams.get("q") ?? "",
+    );
 
-    // 004_performance.sql이 적용된 경우 인덱스 기반 RPC를 우선 사용합니다.
-    const rpc = await supabase.rpc("search_public_patents", {
-      p_query: q,
-      p_limit: limit,
+    const limit = safeLimit(
+      request.nextUrl.searchParams.get("limit"),
+    );
+
+    const snapshot = await adminDb
+      .collection("patents")
+      .select(
+        "application_number",
+        "invention_title",
+        "applicant_name",
+        "ipc_number",
+        "application_date",
+        "abstract",
+        "register_status",
+        "is_public",
+        "updated_at",
+      )
+      .get();
+
+    const rows: PatentRow[] = snapshot.docs
+      .map((document): PatentRow => {
+        const data =
+          document.data() as Record<string, unknown>;
+
+        return {
+          id: document.id,
+          ...data,
+        };
+      })
+
+      // 현재 Firebase 기존 자료에는 is_public이 없음.
+      // false로 명시된 자료만 제외.
+      .filter(
+        (patent) => patent.is_public !== false,
+      )
+
+      // 제목 / 출원인 / IPC / 출원번호 검색
+      .filter((patent) => {
+        if (!q) {
+          return true;
+        }
+
+        return [
+          patent.invention_title,
+          patent.applicant_name,
+          patent.ipc_number,
+          patent.application_number,
+        ].some((value) =>
+          searchable(value).includes(q),
+        );
+      })
+
+      // created_at이 없으므로 updated_at 최신순
+      .sort(
+        (a, b) =>
+          timestampMillis(b.updated_at) -
+          timestampMillis(a.updated_at),
+      )
+
+      .slice(0, limit);
+
+    const data = rows.map((row) => {
+      const {
+        is_public: _isPublic,
+        updated_at: _updatedAt,
+        ...patent
+      } = row;
+
+      return patent;
     });
 
-    if (!rpc.error) {
-      return NextResponse.json({ data: rpc.data ?? [] });
-    }
-
-    // 아직 성능 SQL을 적용하지 않았거나 RPC가 일시적으로 실패해도
-    // 공개 검색 화면이 멈추지 않도록 서버 권한으로 안전하게 대체 조회합니다.
-    console.warn("search_public_patents RPC fallback:", rpc.error.message);
-
-    let query = supabase
-      .from("patents")
-      .select(SELECT_FIELDS)
-      .eq("is_public", true)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-
-    if (q) {
-      query = query.or(
-        `invention_title.ilike.%${q}%,applicant_name.ilike.%${q}%,ipc_number.ilike.%${q}%,application_number.ilike.%${q}%`,
-      );
-    }
-
-    const fallback = await query;
-    if (fallback.error) {
-      console.error("Public patent fallback search failed:", fallback.error);
-      return NextResponse.json(
-        { error: "검색 결과를 불러오지 못했습니다." },
-        { status: 500 },
-      );
-    }
-
-    return NextResponse.json({ data: fallback.data ?? [] });
-  } catch (caught) {
-    console.error("Public patent search API failed:", caught);
     return NextResponse.json(
-      { error: "검색 서버 설정 또는 연결을 확인하세요." },
-      { status: 500 },
+      { data },
+      {
+        headers: {
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+  } catch (caught) {
+    console.error(
+      "Public patent search API failed:",
+      caught,
+    );
+
+    return NextResponse.json(
+      {
+        error: "검색 결과를 불러오지 못했습니다.",
+      },
+      {
+        status: 500,
+      },
     );
   }
 }

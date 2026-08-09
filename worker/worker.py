@@ -13,9 +13,9 @@ from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
-from supabase import Client, create_client
 
-from kipris_client import KiprisClient, KiprisConfig, KiprisError
+
+from .kipris_client import KiprisClient, KiprisConfig, KiprisError
 
 
 load_dotenv()
@@ -47,8 +47,8 @@ def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(value, minimum), maximum)
 
 
-SUPABASE_URL = required_env("SUPABASE_URL")
-SUPABASE_SECRET_KEY = required_env("SUPABASE_SECRET_KEY")
+
+
 KIPRIS_SERVICE_KEY = required_env("KIPRIS_SERVICE_KEY")
 
 WORKER_ID = os.getenv(
@@ -72,10 +72,11 @@ MAX_PDF_BYTES = min(
 FETCH_DETAIL_XML = env_bool("FETCH_DETAIL_XML", False)
 PROGRESS_UPDATE_EVERY = env_int("PROGRESS_UPDATE_EVERY", 5, 1, 100)
 
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_SECRET_KEY,
-)
+
+
+
+
+
 
 kipris = KiprisClient(
     KiprisConfig(
@@ -92,16 +93,22 @@ kipris = KiprisClient(
 
 
 def claim_next_job() -> dict[str, Any] | None:
-    response = supabase.rpc(
-        "claim_next_collection_job",
-        {"p_worker_id": WORKER_ID},
-    ).execute()
-    rows = response.data or []
-    return rows[0] if rows else None
+    try:
+        from .firebase_repository import claim_next_job as firebase_claim_next_job
+    except ImportError:
+        from firebase_repository import claim_next_job as firebase_claim_next_job
+
+    return firebase_claim_next_job()
+
 
 
 def update_job(job_id: str, values: dict[str, Any]) -> None:
-    supabase.table("collection_jobs").update(values).eq("id", job_id).execute()
+    try:
+        from .firebase_repository import update_job as firebase_update_job
+    except ImportError:
+        from firebase_repository import update_job as firebase_update_job
+
+    firebase_update_job(job_id, values)
 
 
 def safe_application_number(value: str) -> str:
@@ -115,123 +122,39 @@ def clean_error_message(exc: Exception) -> str:
     return value[:220] or exc.__class__.__name__
 
 
-def _storage_request(method: str, url: str, data: bytes) -> requests.Response:
-    headers = {
-        "apikey": SUPABASE_SECRET_KEY,
-        "Content-Type": "application/pdf",
-        "x-upsert": "true",
-    }
-    return requests.request(
-        method,
-        url,
-        headers=headers,
-        data=data,
-        timeout=max(REQUEST_TIMEOUT, 120),
-    )
 
-
-def upload_pdf(path: str, data: bytes) -> str:
-    encoded_path = "/".join(quote(part, safe="") for part in path.split("/"))
-    base_url = (
-        f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/"
-        f"{quote(PDF_BUCKET, safe='')}/{encoded_path}"
-    )
-    last_error = ""
-
-    for attempt in range(1, STORAGE_MAX_RETRIES + 1):
-        try:
-            response = _storage_request("POST", base_url, data)
-            if response.status_code < 400:
-                return path
-
-            if response.status_code == 400:
-                update_response = _storage_request("PUT", base_url, data)
-                if update_response.status_code < 400:
-                    return path
-                last_error = (
-                    f"POST 400 / PUT {update_response.status_code}: "
-                    f"{clean_error_message(RuntimeError(update_response.text))}"
-                )
-            else:
-                last_error = (
-                    f"HTTP {response.status_code}: "
-                    f"{clean_error_message(RuntimeError(response.text))}"
-                )
-
-            if response.status_code not in {400, 408, 425, 429, 500, 502, 503, 504}:
-                break
-        except requests.RequestException as exc:
-            last_error = clean_error_message(exc)
-
-        if attempt < STORAGE_MAX_RETRIES:
-            time.sleep(min(2 ** attempt, 8))
-
-    digest = hashlib.sha256(data).hexdigest()[:12]
-    fallback_path = f"fallback/{digest}.pdf"
-    fallback_url = (
-        f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/"
-        f"{quote(PDF_BUCKET, safe='')}/fallback/{digest}.pdf"
-    )
-    try:
-        fallback_response = _storage_request("POST", fallback_url, data)
-        if fallback_response.status_code < 400:
-            return fallback_path
-        last_error = (
-            f"{last_error}; fallback HTTP {fallback_response.status_code}: "
-            f"{clean_error_message(RuntimeError(fallback_response.text))}"
-        )
-    except requests.RequestException as exc:
-        last_error = f"{last_error}; fallback: {clean_error_message(exc)}"
-
-    raise RuntimeError(f"Supabase Storage 업로드 실패(재시도 후 중단): {last_error}")
 
 
 def bulk_save_search_results(
     job_id: str,
     items: list[dict[str, Any]],
 ) -> dict[str, str]:
-    response = supabase.rpc(
-        "bulk_save_patent_results",
-        {
-            "p_job_id": job_id,
-            "p_patents": items,
-        },
-    ).execute()
+    try:
+        from .firebase_repository import (
+            bulk_save_search_results as firebase_bulk_save_search_results,
+        )
+    except ImportError:
+        from firebase_repository import (
+            bulk_save_search_results as firebase_bulk_save_search_results,
+        )
 
-    rows = response.data or []
-    patent_ids = {
-        str(row["application_number"]): str(row["patent_id"])
-        for row in rows
-        if row.get("application_number") and row.get("patent_id")
-    }
-
-    if len(patent_ids) < len(items):
-        application_numbers = [
-            str(item["application_number"])
-            for item in items
-            if item.get("application_number")
-        ]
-        if application_numbers:
-            lookup = (
-                supabase.table("patents")
-                .select("id,application_number")
-                .in_("application_number", application_numbers)
-                .execute()
-            )
-            for row in lookup.data or []:
-                if row.get("application_number") and row.get("id"):
-                    patent_ids[str(row["application_number"])] = str(row["id"])
-
-    return patent_ids
+    return firebase_bulk_save_search_results(
+        job_id,
+        items,
+    )
 
 
 def save_detail_xml(patent_id: str, application_number: str) -> None:
     detail_xml = kipris.get_detail_xml(application_number)
-    (
-        supabase.table("patents")
-        .update({"detail_xml": detail_xml})
-        .eq("id", patent_id)
-        .execute()
+
+    try:
+        from .firebase_repository import save_detail_xml as firebase_save_detail_xml
+    except ImportError:
+        from firebase_repository import save_detail_xml as firebase_save_detail_xml
+
+    firebase_save_detail_xml(
+        patent_id,
+        detail_xml,
     )
 
 
@@ -242,21 +165,29 @@ def save_pdf(
     source_url: str,
 ) -> str:
     pdf_data, _ = kipris.download_pdf(source_url, MAX_PDF_BYTES)
+
     safe_app = safe_application_number(application_number)
     safe_name = f"{safe_app}.pdf"
     requested_path = f"{safe_app}/{safe_name}"
-    storage_path = upload_pdf(requested_path, pdf_data)
 
-    supabase.rpc(
-        "record_patent_pdf",
-        {
-            "p_patent_id": patent_id,
-            "p_storage_bucket": PDF_BUCKET,
-            "p_storage_path": storage_path,
-            "p_original_name": safe_name,
-            "p_byte_size": len(pdf_data),
-        },
-    ).execute()
+    try:
+        from .firebase_storage import upload_pdf as firebase_upload_pdf
+        from .firebase_repository import save_pdf_info as firebase_save_pdf_info
+    except ImportError:
+        from firebase_storage import upload_pdf as firebase_upload_pdf
+        from firebase_repository import save_pdf_info as firebase_save_pdf_info
+
+    storage_path = firebase_upload_pdf(
+        requested_path,
+        pdf_data,
+    )
+
+    firebase_save_pdf_info(
+        patent_id,
+        storage_path,
+        safe_name,
+        len(pdf_data),
+    )
 
     return storage_path
 
@@ -345,15 +276,21 @@ def process_job(job: dict[str, Any]) -> None:
 
         if download_pdf:
             try:
+
+
                 pdf_info = kipris.get_pdf_info(application_number)
+
                 if pdf_info:
                     _, source_url = pdf_info
+
                     save_pdf(
                         patent_id=patent_id,
                         application_number=application_number,
                         source_url=source_url,
-                    )
-                    pdf_saved_count += 1
+                )
+                pdf_saved_count += 1
+
+
             except Exception:
                 logger.exception(
                     "PDF 처리 경고 | application=%s",
