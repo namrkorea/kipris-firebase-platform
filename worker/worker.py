@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import hashlib
 import logging
@@ -49,8 +50,6 @@ def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(value, minimum), maximum)
 
 
-
-
 KIPRIS_SERVICE_KEY = required_env("KIPRIS_SERVICE_KEY")
 
 WORKER_ID = os.getenv(
@@ -73,11 +72,7 @@ MAX_PDF_BYTES = min(
 )
 FETCH_DETAIL_XML = env_bool("FETCH_DETAIL_XML", False)
 PROGRESS_UPDATE_EVERY = env_int("PROGRESS_UPDATE_EVERY", 5, 1, 100)
-
-
-
-
-
+PDF_PARALLEL_WORKERS = 5
 
 
 kipris = KiprisClient(
@@ -103,7 +98,6 @@ def claim_next_job() -> dict[str, Any] | None:
     return firebase_claim_next_job()
 
 
-
 def update_job(job_id: str, values: dict[str, Any]) -> None:
     try:
         from .firebase_repository import update_job as firebase_update_job
@@ -122,9 +116,6 @@ def clean_error_message(exc: Exception) -> str:
     value = re.sub(r"<[^>]+>", " ", str(exc))
     value = re.sub(r"\s+", " ", value).strip()
     return value[:220] or exc.__class__.__name__
-
-
-
 
 
 def bulk_save_search_results(
@@ -165,8 +156,10 @@ def save_pdf(
     patent_id: str,
     application_number: str,
     source_url: str,
+    client: KiprisClient | None = None,
 ) -> str:
-    pdf_data, _ = kipris.download_pdf(source_url, MAX_PDF_BYTES)
+    pdf_client = client or kipris
+    pdf_data, _ = pdf_client.download_pdf(source_url, MAX_PDF_BYTES)
 
     safe_app = safe_application_number(application_number)
     safe_name = f"{safe_app}.pdf"
@@ -192,6 +185,23 @@ def save_pdf(
     )
 
     return storage_path
+
+
+def process_pdf_item(application_number: str, patent_id: str) -> bool:
+    pdf_client = KiprisClient(kipris.config)
+    pdf_info = pdf_client.get_pdf_info(application_number)
+
+    if not pdf_info:
+        return False
+
+    _, source_url = pdf_info
+    save_pdf(
+        patent_id=patent_id,
+        application_number=application_number,
+        source_url=source_url,
+        client=pdf_client,
+    )
+    return True
 
 
 def process_job(job: dict[str, Any]) -> None:
@@ -256,6 +266,7 @@ def process_job(job: dict[str, Any]) -> None:
     pdf_saved_count = 0
     item_errors: list[str] = []
     warnings: list[str] = []
+    pdf_tasks: list[tuple[str, str]] = []
 
     for index, item in enumerate(items, start=1):
         application_number = str(item["application_number"])
@@ -277,30 +288,8 @@ def process_job(job: dict[str, Any]) -> None:
                 warnings.append(f"{application_number}: 상세정보 일부 누락")
 
         if download_pdf:
-            try:
-
-
-                pdf_info = kipris.get_pdf_info(application_number)
-
-                if pdf_info:
-                    _, source_url = pdf_info
-
-                    save_pdf(
-                        patent_id=patent_id,
-                        application_number=application_number,
-                        source_url=source_url,
-                )
-                pdf_saved_count += 1
-
-
-            except Exception:
-                logger.exception(
-                    "PDF 처리 경고 | application=%s",
-                    application_number,
-                )
-                warnings.append(f"{application_number}: PDF 저장 실패")
-
-        if index % PROGRESS_UPDATE_EVERY == 0 or index == len(items):
+            pdf_tasks.append((application_number, patent_id))
+        elif index % PROGRESS_UPDATE_EVERY == 0 or index == len(items):
             update_job(
                 job_id,
                 {
@@ -308,6 +297,55 @@ def process_job(job: dict[str, Any]) -> None:
                     "result_count": saved_count,
                 },
             )
+
+    if download_pdf and pdf_tasks:
+        completed_pdf_tasks = 0
+        logger.info(
+            "PDF 병렬 처리 시작 | id=%s | 작업=%s | 동시=%s",
+            job_id,
+            len(pdf_tasks),
+            PDF_PARALLEL_WORKERS,
+        )
+
+        with ThreadPoolExecutor(max_workers=PDF_PARALLEL_WORKERS) as executor:
+            future_to_application = {
+                executor.submit(
+                    process_pdf_item,
+                    application_number,
+                    patent_id,
+                ): application_number
+                for application_number, patent_id in pdf_tasks
+            }
+
+            for future in as_completed(future_to_application):
+                application_number = future_to_application[future]
+                completed_pdf_tasks += 1
+
+                try:
+                    if future.result():
+                        pdf_saved_count += 1
+                except Exception:
+                    logger.exception(
+                        "PDF 처리 경고 | application=%s",
+                        application_number,
+                    )
+                    warnings.append(f"{application_number}: PDF 저장 실패")
+
+                progress_current = min(
+                    len(items),
+                    completed_pdf_tasks + len(item_errors),
+                )
+                if (
+                    completed_pdf_tasks % PROGRESS_UPDATE_EVERY == 0
+                    or completed_pdf_tasks == len(pdf_tasks)
+                ):
+                    update_job(
+                        job_id,
+                        {
+                            "progress_current": progress_current,
+                            "result_count": saved_count,
+                        },
+                    )
 
     summary_parts: list[str] = []
     if warnings:
