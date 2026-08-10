@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import random
 import re
+import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +15,25 @@ import requests
 
 class KiprisError(RuntimeError):
     pass
+
+
+class KiprisRateLimitError(KiprisError):
+    pass
+
+
+_API_RATE_LOCK = threading.Lock()
+_API_LAST_REQUEST_AT = 0.0
+
+
+def _wait_shared_api_rate_limit(interval: float) -> None:
+    global _API_LAST_REQUEST_AT
+
+    with _API_RATE_LOCK:
+        elapsed = time.monotonic() - _API_LAST_REQUEST_AT
+        wait = max(interval, 0.0) - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        _API_LAST_REQUEST_AT = time.monotonic()
 
 
 def _local_name(tag: str) -> str:
@@ -172,7 +192,7 @@ class KiprisConfig:
     search_url: str
     detail_url: str
     pdf_url: str
-    interval: float = 0.6
+    interval: float = 1.2
     timeout: int = 60
     max_retries: int = 4
     retry_backoff: float = 2.0
@@ -200,12 +220,16 @@ class KiprisClient:
         base = max(self.config.retry_backoff, 0.5)
         return min(base * (2 ** max(attempt - 1, 0)) + random.uniform(0, 0.5), 20.0)
 
+    def _service_limit_delay(self, attempt: int) -> float:
+        return min(30.0 * (2 ** max(attempt - 1, 0)) + random.uniform(0, 2.0), 120.0)
+
     def _get_xml(self, url: str, params: dict[str, Any]) -> tuple[ET.Element, str]:
         query = {**params, "ServiceKey": self.config.service_key}
         last_error: Exception | None = None
+        max_attempts = max(self.config.max_retries, 1)
 
-        for attempt in range(1, max(self.config.max_retries, 1) + 1):
-            self._wait_rate_limit()
+        for attempt in range(1, max_attempts + 1):
+            _wait_shared_api_rate_limit(self.config.interval)
             try:
                 response = self.session.get(
                     url,
@@ -233,20 +257,28 @@ class KiprisClient:
                 result_code = _find_text(root, "resultCode")
                 result_message = _find_text(root, "resultMsg")
                 if result_code and result_code not in {"00", "0"}:
-                    raise KiprisError(
+                    message = (
                         f"KIPRIS 오류 {result_code}: "
                         f"{result_message or '알 수 없는 오류'}"
                     )
+                    if result_code == "22":
+                        raise KiprisRateLimitError(message)
+                    raise KiprisError(message)
 
                 return root, text
+            except KiprisRateLimitError as exc:
+                last_error = exc
+                if attempt >= max_attempts:
+                    break
+                time.sleep(self._service_limit_delay(attempt))
             except (requests.RequestException, KiprisError) as exc:
                 last_error = exc
-                if attempt >= max(self.config.max_retries, 1):
+                if attempt >= max_attempts:
                     break
                 time.sleep(self._retry_delay(attempt))
 
         raise KiprisError(
-            f"KIPRIS 요청 실패(재시도 {max(self.config.max_retries, 1)}회): "
+            f"KIPRIS 요청 실패(재시도 {max_attempts}회): "
             f"{last_error}"
         ) from last_error
 
@@ -407,7 +439,8 @@ class KiprisClient:
             raise KiprisError("PDF 주소 형식이 올바르지 않습니다.")
 
         last_error: Exception | None = None
-        for attempt in range(1, max(self.config.max_retries, 1) + 1):
+        max_attempts = max(self.config.max_retries, 1)
+        for attempt in range(1, max_attempts + 1):
             self._wait_rate_limit()
             try:
                 response = self.session.get(
@@ -443,11 +476,11 @@ class KiprisClient:
                 )
             except (requests.RequestException, KiprisError) as exc:
                 last_error = exc
-                if attempt >= max(self.config.max_retries, 1):
+                if attempt >= max_attempts:
                     break
                 time.sleep(self._retry_delay(attempt))
 
         raise KiprisError(
-            f"PDF 다운로드 실패(재시도 {max(self.config.max_retries, 1)}회): "
+            f"PDF 다운로드 실패(재시도 {max_attempts}회): "
             f"{last_error}"
         ) from last_error
