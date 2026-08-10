@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   clearStoredJobs,
+  exportStoredJobs,
+  importStoredJobs,
   readStoredJobs,
   removeStoredJob,
   StoredJob,
@@ -31,7 +33,7 @@ type JobRow = StoredJob & {
 };
 
 const EMPTY_MESSAGE =
-  "이 브라우저에서 등록한 작업이 없습니다. 수집 요청 후 이곳에서 확인할 수 있습니다.";
+  "이 브라우저에 복원된 작업이 없습니다. 새 수집 요청을 등록하거나 작업 접근키를 복원하세요.";
 
 export default function JobsPage() {
   const [rows, setRows] = useState<JobRow[]>([]);
@@ -87,6 +89,45 @@ export default function JobsPage() {
     };
   }, []);
 
+  async function backupAccessKey() {
+    if (readStoredJobs().length === 0) {
+      window.alert("백업할 작업이 없습니다.");
+      return;
+    }
+
+    const accessKey = exportStoredJobs();
+    try {
+      await navigator.clipboard.writeText(accessKey);
+      window.alert(
+        "작업 접근키를 클립보드에 복사했습니다. 다른 PC의 요청·결과 목록에서 ‘접근키 복원’을 눌러 붙여넣으세요.\n\n이 값에는 결과를 열 수 있는 비밀 토큰이 포함되어 있으므로 타인에게 공유하지 마세요.",
+      );
+    } catch {
+      window.prompt(
+        "아래 작업 접근키를 전체 복사해 안전하게 보관하세요.",
+        accessKey,
+      );
+    }
+  }
+
+  function restoreAccessKey() {
+    const raw = window.prompt(
+      "다른 PC에서 백업한 작업 접근키를 붙여넣으세요.\n복원 후 해당 작업의 결과 장표와 PDF를 다시 열 수 있습니다.",
+    );
+    if (!raw) return;
+
+    try {
+      const count = importStoredJobs(raw.trim());
+      window.alert(`${count}건의 작업 접근정보를 복원했습니다.`);
+      window.location.reload();
+    } catch (caught) {
+      window.alert(
+        caught instanceof Error
+          ? caught.message
+          : "작업 접근키를 복원하지 못했습니다.",
+      );
+    }
+  }
+
   function removeOne(row: JobRow) {
     const title =
       row.statusData?.report_title ||
@@ -132,6 +173,14 @@ export default function JobsPage() {
           </p>
         </div>
         <div className="page-title-actions">
+          <button className="button secondary" type="button" onClick={restoreAccessKey}>
+            접근키 복원
+          </button>
+          {rows.length > 0 && (
+            <button className="button secondary" type="button" onClick={backupAccessKey}>
+              접근키 백업
+            </button>
+          )}
           {rows.length > 0 && (
             <button className="button danger-outline" type="button" onClick={removeAll}>
               목록 전체 비우기
@@ -144,8 +193,9 @@ export default function JobsPage() {
       </div>
 
       <p className="notice">
-        작업 확인용 토큰과 출력 선택값은 현재 브라우저에만 저장됩니다. 목록 삭제는
-        이 브라우저에서만 적용되며, Firebase의 특허·PDF 원본은 그대로 유지됩니다.
+        작업 결과와 PDF 원본은 Firebase에 유지됩니다. 다른 PC에서도 같은 결과를 열려면
+        ‘접근키 백업’으로 작업 접근정보를 복사한 뒤 다른 PC에서 ‘접근키 복원’으로 가져오세요.
+        접근키에는 결과 열람용 비밀 토큰이 포함되어 있으므로 타인에게 공유하지 마세요.
       </p>
 
       {message && <p className="notice">{message}</p>}
