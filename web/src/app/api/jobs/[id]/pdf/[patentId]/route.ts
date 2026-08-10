@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PATENT_ID_PATTERN = /^[0-9a-f]{40}$/i;
+const PUBLIC_VIEW_TOKEN = "public";
 
 export async function GET(
   request: NextRequest,
@@ -18,7 +19,7 @@ export async function GET(
 
     if (
       !UUID_PATTERN.test(id) ||
-      (token && !UUID_PATTERN.test(token)) ||
+      (token && token !== PUBLIC_VIEW_TOKEN && !UUID_PATTERN.test(token)) ||
       !PATENT_ID_PATTERN.test(patentId)
     ) {
       return NextResponse.json(
@@ -35,7 +36,11 @@ export async function GET(
     }
 
     const jobData = jobSnapshot.data() ?? {};
-    if (token && String(jobData.public_token ?? "") !== token) {
+    if (
+      token &&
+      token !== PUBLIC_VIEW_TOKEN &&
+      String(jobData.public_token ?? "") !== token
+    ) {
       return NextResponse.json({ error: "작업을 찾을 수 없습니다." }, { status: 404 });
     }
 
