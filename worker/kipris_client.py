@@ -100,9 +100,7 @@ def _contains_exact_term(value: str, query: str) -> bool:
     needle = _normalize_text(query)
     if not haystack or not needle:
         return False
-
-    pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(needle)}(?![0-9A-Za-z가-힣])"
-    return re.search(pattern, haystack, flags=re.IGNORECASE) is not None
+    return needle in haystack
 
 
 def _matches_exact_search(
@@ -120,12 +118,10 @@ def _matches_exact_search(
         )
 
     if search_field == "inventionTitle":
-        return _normalize_text(str(patent.get("invention_title") or "")) == _normalize_text(query)
+        return _contains_exact_term(str(patent.get("invention_title") or ""), query)
 
     if search_field == "applicant":
-        normalized_query = _normalize_text(query)
-        applicant_value = str(patent.get("applicant_name") or "")
-        return _normalize_text(applicant_value) == normalized_query or normalized_query in _split_people(applicant_value)
+        return _contains_exact_term(str(patent.get("applicant_name") or ""), query)
 
     if search_field == "ipcNumber":
         requested = [part.strip() for part in re.split(r"\s*\+\s*", query) if part.strip()]
