@@ -3,12 +3,10 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  clearStoredJobs,
   exportStoredJobs,
   importStoredJobs,
   readStoredJobs,
   removeStoredJob,
-  StoredJob,
 } from "@/lib/job-storage";
 import { jobStatusLabel, searchFieldLabel } from "@/lib/patent-display";
 
@@ -27,71 +25,48 @@ type JobStatus = {
   created_at: string;
 };
 
-type JobRow = StoredJob & {
-  statusData?: JobStatus;
-  loadError?: string;
+type JobRow = JobStatus & {
+  token?: string;
 };
-
-const EMPTY_MESSAGE =
-  "이 브라우저에 복원된 작업이 없습니다. 새 수집 요청을 등록하거나 작업 접근키를 복원하세요.";
 
 export default function JobsPage() {
   const [rows, setRows] = useState<JobRow[]>([]);
-  const [message, setMessage] = useState("작업 기록을 불러오는 중...");
+  const [message, setMessage] = useState("데이터베이스 작업 목록을 불러오는 중...");
+
+  async function load() {
+    try {
+      const response = await fetch("/api/public-jobs", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("작업 목록을 불러오지 못했습니다.");
+      }
+
+      const data = (await response.json()) as { jobs?: JobStatus[] };
+      const localTokens = new Map(
+        readStoredJobs().map((item) => [item.id, item.token]),
+      );
+      const next = (data.jobs ?? []).map((job) => ({
+        ...job,
+        token: localTokens.get(job.id),
+      }));
+
+      setRows(next);
+      setMessage(next.length === 0 ? "데이터베이스에 저장된 작업이 없습니다." : "");
+    } catch (caught) {
+      setMessage(
+        caught instanceof Error ? caught.message : "작업 목록을 불러오지 못했습니다.",
+      );
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      const stored = readStoredJobs();
-      if (stored.length === 0) {
-        setRows([]);
-        setMessage(EMPTY_MESSAGE);
-        return;
-      }
-
-      const loaded = await Promise.all(
-        stored.map(async (item): Promise<JobRow> => {
-          try {
-            const response = await fetch(
-              `/api/jobs/${encodeURIComponent(
-                item.id,
-              )}?token=${encodeURIComponent(item.token)}`,
-              { cache: "no-store" },
-            );
-
-            if (!response.ok) {
-              return { ...item, loadError: "상태를 확인할 수 없습니다." };
-            }
-
-            const statusData = (await response.json()) as JobStatus;
-            return { ...item, statusData };
-          } catch {
-            return { ...item, loadError: "상태를 확인할 수 없습니다." };
-          }
-        }),
-      );
-
-      if (!cancelled) {
-        const currentIds = new Set(readStoredJobs().map((item) => item.id));
-        const visibleRows = loaded.filter((item) => currentIds.has(item.id));
-        setRows(visibleRows);
-        setMessage(visibleRows.length === 0 ? EMPTY_MESSAGE : "");
-      }
-    }
-
     load();
     const timer = window.setInterval(load, 10000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+    return () => window.clearInterval(timer);
   }, []);
 
   async function backupAccessKey() {
     if (readStoredJobs().length === 0) {
-      window.alert("백업할 작업이 없습니다.");
+      window.alert("백업할 작업 접근정보가 없습니다.");
       return;
     }
 
@@ -99,67 +74,61 @@ export default function JobsPage() {
     try {
       await navigator.clipboard.writeText(accessKey);
       window.alert(
-        "작업 접근키를 클립보드에 복사했습니다. 다른 PC의 요청·결과 목록에서 ‘접근키 복원’을 눌러 붙여넣으세요.\n\n이 값에는 결과를 열 수 있는 비밀 토큰이 포함되어 있으므로 타인에게 공유하지 마세요.",
+        "작업 접근키를 클립보드에 복사했습니다. 다른 PC에서 복원하면 본인이 등록한 작업의 상세 결과를 다시 열거나 삭제할 수 있습니다.\n\n비밀 토큰이 포함되어 있으므로 타인에게 공유하지 마세요.",
       );
     } catch {
-      window.prompt(
-        "아래 작업 접근키를 전체 복사해 안전하게 보관하세요.",
-        accessKey,
-      );
+      window.prompt("아래 작업 접근키를 전체 복사해 안전하게 보관하세요.", accessKey);
     }
   }
 
   function restoreAccessKey() {
     const raw = window.prompt(
-      "다른 PC에서 백업한 작업 접근키를 붙여넣으세요.\n복원 후 해당 작업의 결과 장표와 PDF를 다시 열 수 있습니다.",
+      "다른 PC에서 백업한 작업 접근키를 붙여넣으세요.\n복원하면 본인이 등록한 작업의 상세 결과를 다시 열거나 삭제할 수 있습니다.",
     );
     if (!raw) return;
 
     try {
       const count = importStoredJobs(raw.trim());
       window.alert(`${count}건의 작업 접근정보를 복원했습니다.`);
-      window.location.reload();
+      load();
     } catch (caught) {
       window.alert(
-        caught instanceof Error
-          ? caught.message
-          : "작업 접근키를 복원하지 못했습니다.",
+        caught instanceof Error ? caught.message : "작업 접근키를 복원하지 못했습니다.",
       );
     }
   }
 
-  function removeOne(row: JobRow) {
-    const title =
-      row.statusData?.report_title ||
-      row.reportTitle ||
-      "특허 검색·검토 결과";
+  async function removeOne(row: JobRow) {
+    if (!row.token) {
+      window.alert("이 작업을 삭제할 수 있는 확인용 토큰이 이 브라우저에 없습니다.");
+      return;
+    }
 
+    const title = row.report_title || "특허 검색·검토 결과";
     const confirmed = window.confirm(
-      `“${title}”을(를) 요청·결과 목록에서 삭제할까요?\n\n` +
-        "현재 브라우저의 목록에서만 제거되며, Firebase에 저장된 특허와 PDF 원본은 삭제되지 않습니다.",
+      `“${title}”을(를) 작업 목록과 데이터베이스에서 삭제할까요?\n\n` +
+        "작업 기록과 작업-결과 연결정보는 삭제됩니다. 특허 원문 데이터와 Firebase Storage의 PDF 원본은 유지됩니다.",
     );
-
     if (!confirmed) return;
 
-    removeStoredJob(row.id);
-    const next = rows.filter((item) => item.id !== row.id);
-    setRows(next);
-    if (next.length === 0) setMessage(EMPTY_MESSAGE);
-  }
+    try {
+      const response = await fetch(
+        `/api/public-jobs/${encodeURIComponent(row.id)}?token=${encodeURIComponent(row.token)}`,
+        { method: "DELETE" },
+      );
 
-  function removeAll() {
-    if (rows.length === 0) return;
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || "작업을 삭제하지 못했습니다.");
+      }
 
-    const confirmed = window.confirm(
-      `현재 표시된 요청·결과 ${rows.length}건을 모두 목록에서 삭제할까요?\n\n` +
-        "현재 브라우저의 목록만 비워지며, Firebase에 저장된 특허와 PDF 원본은 삭제되지 않습니다.",
-    );
-
-    if (!confirmed) return;
-
-    clearStoredJobs();
-    setRows([]);
-    setMessage(EMPTY_MESSAGE);
+      removeStoredJob(row.id);
+      setRows((current) => current.filter((item) => item.id !== row.id));
+    } catch (caught) {
+      window.alert(
+        caught instanceof Error ? caught.message : "작업을 삭제하지 못했습니다.",
+      );
+    }
   }
 
   return (
@@ -169,23 +138,16 @@ export default function JobsPage() {
           <p className="eyebrow">REQUEST & OUTPUT</p>
           <h1>요청·결과 목록</h1>
           <p className="page-description">
-            입력한 검색 조건, 작업 진행 상태, 정리된 결과 장표를 확인합니다.
+            데이터베이스에 저장된 검색 요청과 작업 진행 상태를 누구나 확인할 수 있습니다.
           </p>
         </div>
         <div className="page-title-actions">
           <button className="button secondary" type="button" onClick={restoreAccessKey}>
             접근키 복원
           </button>
-          {rows.length > 0 && (
-            <button className="button secondary" type="button" onClick={backupAccessKey}>
-              접근키 백업
-            </button>
-          )}
-          {rows.length > 0 && (
-            <button className="button danger-outline" type="button" onClick={removeAll}>
-              목록 전체 비우기
-            </button>
-          )}
+          <button className="button secondary" type="button" onClick={backupAccessKey}>
+            접근키 백업
+          </button>
           <Link className="button" href="/request">
             새 수집 요청
           </Link>
@@ -193,105 +155,93 @@ export default function JobsPage() {
       </div>
 
       <p className="notice">
-        작업 결과와 PDF 원본은 Firebase에 유지됩니다. 다른 PC에서도 같은 결과를 열려면
-        ‘접근키 백업’으로 작업 접근정보를 복사한 뒤 다른 PC에서 ‘접근키 복원’으로 가져오세요.
-        접근키에는 결과 열람용 비밀 토큰이 포함되어 있으므로 타인에게 공유하지 마세요.
+        이 목록은 Firebase 데이터베이스의 작업 기록을 공용으로 표시합니다. 누구나 작업명,
+        검색어, 진행상태와 결과 건수를 볼 수 있습니다. 상세 결과 열람과 삭제는 해당 작업의
+        확인용 토큰을 가진 브라우저에서만 가능합니다. 삭제 시 작업 기록과 결과 연결정보는
+        데이터베이스에서 삭제되며 특허 원문과 PDF 원본은 유지됩니다.
       </p>
 
       {message && <p className="notice">{message}</p>}
 
       <div className="job-grid">
-        {rows.map((row) => {
-          const job = row.statusData;
+        {rows.map((job) => {
           const percent =
-            job && job.progress_total > 0
+            job.progress_total > 0
               ? Math.min(
                   100,
-                  Math.round(
-                    (job.progress_current / job.progress_total) * 100,
-                  ),
+                  Math.round((job.progress_current / job.progress_total) * 100),
                 )
               : 0;
-          const detailUrl = `/jobs/${encodeURIComponent(
-            row.id,
-          )}?token=${encodeURIComponent(row.token)}`;
-          const reportUrl = `/reports/${encodeURIComponent(
-            row.id,
-          )}?token=${encodeURIComponent(row.token)}`;
+          const detailUrl = job.token
+            ? `/jobs/${encodeURIComponent(job.id)}?token=${encodeURIComponent(job.token)}`
+            : "";
+          const reportUrl = job.token
+            ? `/reports/${encodeURIComponent(job.id)}?token=${encodeURIComponent(job.token)}`
+            : "";
 
           return (
-            <article key={row.id} className="card job-card">
+            <article key={job.id} className="card job-card">
               <div className="job-card-header">
                 <div>
-                  <span className={`status status-${job?.status ?? "loading"}`}>
-                    {job ? jobStatusLabel(job.status) : "확인 중"}
+                  <span className={`status status-${job.status}`}>
+                    {jobStatusLabel(job.status)}
                   </span>
-                  <h2>
-                    {job?.report_title ||
-                      row.reportTitle ||
-                      "특허 검색·검토 결과"}
-                  </h2>
+                  <h2>{job.report_title || "특허 검색·검토 결과"}</h2>
                   <p className="job-query">
-                    {searchFieldLabel(job?.search_field ?? "word")} · “
-                    {job?.query_text ?? row.queryText}”
+                    {searchFieldLabel(job.search_field)} · “{job.query_text}”
                   </p>
                 </div>
-                <time>
-                  {new Date(job?.created_at ?? row.createdAt).toLocaleString(
-                    "ko-KR",
-                  )}
-                </time>
+                <time>{new Date(job.created_at).toLocaleString("ko-KR")}</time>
               </div>
 
-              {(job?.review_purpose || row.reviewPurpose) && (
-                <p className="job-purpose">
-                  검토 목적: {job?.review_purpose || row.reviewPurpose}
-                </p>
+              {job.review_purpose && (
+                <p className="job-purpose">검토 목적: {job.review_purpose}</p>
               )}
 
-              {job && (
-                <>
-                  <div className="job-metrics">
-                    <span>
-                      <strong>{job.progress_current}</strong>
-                      진행
-                    </span>
-                    <span>
-                      <strong>{job.progress_total || "-"}</strong>
-                      대상
-                    </span>
-                    <span>
-                      <strong>{job.result_count}</strong>
-                      저장 결과
-                    </span>
-                  </div>
-                  <div className="progress" aria-label={`진행률 ${percent}%`}>
-                    <div style={{ width: `${percent}%` }} />
-                  </div>
-                </>
-              )}
+              <div className="job-metrics">
+                <span>
+                  <strong>{job.progress_current}</strong>
+                  진행
+                </span>
+                <span>
+                  <strong>{job.progress_total || "-"}</strong>
+                  대상
+                </span>
+                <span>
+                  <strong>{job.result_count}</strong>
+                  저장 결과
+                </span>
+              </div>
+              <div className="progress" aria-label={`진행률 ${percent}%`}>
+                <div style={{ width: `${percent}%` }} />
+              </div>
 
-              {row.loadError && <p className="error">{row.loadError}</p>}
-              {job?.error_message && (
+              {job.error_message && (
                 <p className={job.status === "completed" ? "warning" : "error"}>
                   {job.error_message}
                 </p>
               )}
 
               <div className="job-actions">
-                <button
-                  className="button danger-outline"
-                  type="button"
-                  onClick={() => removeOne(row)}
-                >
-                  목록에서 삭제
-                </button>
-                <Link className="button secondary" href={detailUrl}>
-                  요청·진행 검토
-                </Link>
-                <Link className="button" href={reportUrl}>
-                  결과 장표 보기
-                </Link>
+                {job.token ? (
+                  <>
+                    <button
+                      className="button danger-outline"
+                      type="button"
+                      onClick={() => removeOne(job)}
+                    >
+                      목록·DB에서 삭제
+                    </button>
+                    <Link className="button secondary" href={detailUrl}>
+                      요청·진행 검토
+                    </Link>
+                    <Link className="button" href={reportUrl}>
+                      결과 장표 보기
+                    </Link>
+                  </>
+                ) : (
+                  <span className="notice subtle">공개 목록 보기 전용</span>
+                )}
               </div>
             </article>
           );
