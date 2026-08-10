@@ -2,12 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  exportStoredJobs,
-  importStoredJobs,
-  readStoredJobs,
-  removeStoredJob,
-} from "@/lib/job-storage";
+import { readStoredJobs, removeStoredJob } from "@/lib/job-storage";
 import { jobStatusLabel, searchFieldLabel } from "@/lib/patent-display";
 
 type JobStatus = {
@@ -64,40 +59,6 @@ export default function JobsPage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  async function backupAccessKey() {
-    if (readStoredJobs().length === 0) {
-      window.alert("백업할 작업 접근정보가 없습니다.");
-      return;
-    }
-
-    const accessKey = exportStoredJobs();
-    try {
-      await navigator.clipboard.writeText(accessKey);
-      window.alert(
-        "작업 접근키를 클립보드에 복사했습니다. 다른 PC에서 복원하면 본인이 등록한 작업의 상세 결과를 다시 열거나 삭제할 수 있습니다.\n\n비밀 토큰이 포함되어 있으므로 타인에게 공유하지 마세요.",
-      );
-    } catch {
-      window.prompt("아래 작업 접근키를 전체 복사해 안전하게 보관하세요.", accessKey);
-    }
-  }
-
-  function restoreAccessKey() {
-    const raw = window.prompt(
-      "다른 PC에서 백업한 작업 접근키를 붙여넣으세요.\n복원하면 본인이 등록한 작업의 상세 결과를 다시 열거나 삭제할 수 있습니다.",
-    );
-    if (!raw) return;
-
-    try {
-      const count = importStoredJobs(raw.trim());
-      window.alert(`${count}건의 작업 접근정보를 복원했습니다.`);
-      load();
-    } catch (caught) {
-      window.alert(
-        caught instanceof Error ? caught.message : "작업 접근키를 복원하지 못했습니다.",
-      );
-    }
-  }
-
   async function removeOne(row: JobRow) {
     if (!row.token) {
       window.alert("이 작업을 삭제할 수 있는 확인용 토큰이 이 브라우저에 없습니다.");
@@ -142,12 +103,6 @@ export default function JobsPage() {
           </p>
         </div>
         <div className="page-title-actions">
-          <button className="button secondary" type="button" onClick={restoreAccessKey}>
-            접근키 복원
-          </button>
-          <button className="button secondary" type="button" onClick={backupAccessKey}>
-            접근키 백업
-          </button>
           <Link className="button" href="/request">
             새 수집 요청
           </Link>
