@@ -26,6 +26,8 @@ jobs:
       KIPRIS_SEARCH_URL: https://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getAdvancedSearch
       KIPRIS_DETAIL_URL: https://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getBibliographyDetailInfoSearch
       KIPRIS_PDF_URL: https://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch
+      KIPRIS_REQUEST_INTERVAL: "1.2"
+      KIPRIS_MAX_RETRIES: "4"
 
       FIREBASE_STORAGE_BUCKET: kipris-firebase-platform.firebasestorage.app
 
