@@ -18,8 +18,41 @@ type SearchField =
   | "publicationNumber"
   | "registerNumber";
 
+type UiSearchField =
+  | SearchField
+  | "abstract"
+  | "claims"
+  | "description"
+  | "fullText"
+  | "openNumber"
+  | "internationalApplicationNumber"
+  | "internationalOpenNumber"
+  | "cpcNumber"
+  | "inventor"
+  | "agent"
+  | "registrant"
+  | "exclusiveLicensee"
+  | "nonExclusiveLicensee"
+  | "finalOwner";
+
+type Category = "word" | "content" | "number" | "class" | "person";
+type LogicalOperator = "AND" | "OR";
 type DateFilterType = "none" | "application" | "registration";
 type Step = "input" | "review";
+
+type ConditionRow = {
+  id: string;
+  category: Category;
+  field: UiSearchField;
+  value: string;
+  operator: LogicalOperator;
+};
+
+type FieldOption = {
+  value: UiSearchField;
+  label: string;
+  supported: boolean;
+};
 
 const CURRENT_YEAR = new Date().getFullYear();
 const YEAR_OPTIONS = Array.from(
@@ -29,6 +62,54 @@ const YEAR_OPTIONS = Array.from(
 const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) =>
   String(index + 1).padStart(2, "0"),
 );
+
+const CATEGORY_LABELS: Record<Category, string> = {
+  word: "자유검색(전문)",
+  content: "내용검색",
+  number: "번호정보",
+  class: "분류정보",
+  person: "인명정보",
+};
+
+const CATEGORY_OPTIONS: Record<Category, FieldOption[]> = {
+  word: [{ value: "word", label: "자유검색(전문)", supported: true }],
+  content: [
+    { value: "inventionTitle", label: "발명의명칭(TL)", supported: true },
+    { value: "abstract", label: "요약(AB)", supported: false },
+    { value: "claims", label: "청구범위(CL)", supported: false },
+    { value: "description", label: "명세서(DS)", supported: false },
+    { value: "fullText", label: "일괄(CT)", supported: false },
+  ],
+  number: [
+    { value: "applicationNumber", label: "출원번호(AN)", supported: true },
+    { value: "registerNumber", label: "등록번호(GN)", supported: true },
+    { value: "openNumber", label: "공개번호(OPN)", supported: false },
+    { value: "publicationNumber", label: "공고번호(PN)", supported: true },
+    { value: "internationalApplicationNumber", label: "국제출원번호(IAN)", supported: false },
+    { value: "internationalOpenNumber", label: "국제공개번호(ION)", supported: false },
+  ],
+  class: [
+    { value: "ipcNumber", label: "IPC", supported: true },
+    { value: "cpcNumber", label: "CPC", supported: false },
+  ],
+  person: [
+    { value: "applicant", label: "출원인(AP)", supported: true },
+    { value: "inventor", label: "발명자(IN)", supported: false },
+    { value: "agent", label: "대리인(AG)", supported: false },
+    { value: "registrant", label: "등록권자(RG)", supported: false },
+    { value: "exclusiveLicensee", label: "전용실시권자(EL)", supported: false },
+    { value: "nonExclusiveLicensee", label: "통상실시권자(NL)", supported: false },
+    { value: "finalOwner", label: "최종권리자(TRH)", supported: false },
+  ],
+};
+
+const DEFAULT_ROWS: ConditionRow[] = [
+  { id: "word-1", category: "word", field: "word", value: "", operator: "AND" },
+  { id: "content-1", category: "content", field: "inventionTitle", value: "", operator: "AND" },
+  { id: "number-1", category: "number", field: "registerNumber", value: "", operator: "AND" },
+  { id: "class-1", category: "class", field: "ipcNumber", value: "", operator: "AND" },
+  { id: "person-1", category: "person", field: "applicant", value: "", operator: "AND" },
+];
 
 const OUTPUT_OPTIONS: Array<{
   value: OutputField;
@@ -46,7 +127,7 @@ const OUTPUT_OPTIONS: Array<{
 
 const rowStyle = {
   display: "grid",
-  gridTemplateColumns: "135px 240px minmax(280px, 1fr) 86px 34px",
+  gridTemplateColumns: "135px 240px minmax(280px, 1fr) 88px 38px",
   gap: "8px",
   alignItems: "center",
   padding: "7px 0",
@@ -58,21 +139,31 @@ const labelStyle = {
   color: "#26364b",
 } as const;
 
-const andStyle = {
-  minHeight: "46px",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  border: "1px solid #b9c5d4",
-  borderRadius: "9px",
-  background: "#fff",
-  fontWeight: 700,
-  color: "#394a61",
-} as const;
-
 function formatYearMonth(value: string): string {
   if (!/^\d{6}$/.test(value)) return value;
   return `${value.slice(0, 4)}.${value.slice(4, 6)}`;
+}
+
+function fieldLabel(field: UiSearchField): string {
+  for (const options of Object.values(CATEGORY_OPTIONS)) {
+    const found = options.find((option) => option.value === field);
+    if (found) return found.label;
+  }
+  return field;
+}
+
+function fieldSupported(field: UiSearchField): field is SearchField {
+  return Object.values(CATEGORY_OPTIONS)
+    .flat()
+    .some((option) => option.value === field && option.supported);
+}
+
+function placeholderFor(category: Category): string {
+  if (category === "word") return '예) 자동차 엔진  (구문검색: "휴대폰케이스")';
+  if (category === "content") return '예) 휴대폰 터치스크린, 전자*화폐, "휴대폰케이스"';
+  if (category === "number") return "예) 1020150123456";
+  if (category === "class") return "예) G06Q + H04Q";
+  return "예) 대한민국, 삼성중공업";
 }
 
 export default function RequestPage() {
@@ -81,11 +172,7 @@ export default function RequestPage() {
   const [step, setStep] = useState<Step>("input");
   const [reportTitle, setReportTitle] = useState("특허 검색·검토 결과");
   const [reviewPurpose, setReviewPurpose] = useState("");
-  const [queryText, setQueryText] = useState("");
-  const [searchField, setSearchField] = useState<SearchField>("word");
-  const [contentField, setContentField] = useState<SearchField>("inventionTitle");
-  const [numberField, setNumberField] = useState<SearchField>("registerNumber");
-  const [personField, setPersonField] = useState<SearchField>("applicant");
+  const [conditions, setConditions] = useState<ConditionRow[]>(DEFAULT_ROWS);
   const [dateFilterType, setDateFilterType] = useState<DateFilterType>("none");
   const [dateStartYear, setDateStartYear] = useState(String(CURRENT_YEAR - 5));
   const [dateStartMonth, setDateStartMonth] = useState("01");
@@ -99,24 +186,25 @@ export default function RequestPage() {
 
   const dateStartYm = `${dateStartYear}${dateStartMonth}`;
   const dateEndYm = `${dateEndYear}${dateEndMonth}`;
-  const dateFilterLabel =
-    dateFilterType === "application"
-      ? "출원일"
-      : dateFilterType === "registration"
-        ? "등록일"
-        : "기간 제한 없음";
+  const activeConditions = conditions.filter((row) => row.value.trim().length > 0);
+  const primaryCondition = activeConditions[0] ?? conditions[0];
 
-  const reviewRows = useMemo(
-    () => [
+  const reviewRows = useMemo(() => {
+    const conditionText = activeConditions.length
+      ? activeConditions
+          .map((row, index) => `${index === 0 ? "" : `${row.operator} `}${fieldLabel(row.field)} = ${row.value.trim()}`)
+          .join(" / ")
+      : "미입력";
+
+    return [
       ["결과표 제목", reportTitle.trim() || "특허 검색·검토 결과"],
       ["검토 목적", reviewPurpose.trim() || "미입력"],
-      ["검색 항목", searchFieldLabel(searchField)],
-      ["검색어", queryText.trim() || "미입력"],
+      ["검색 조건", conditionText],
       [
         "검색 기간",
         dateFilterType === "none"
           ? "기간 제한 없음"
-          : `${dateFilterLabel} ${formatYearMonth(dateStartYm)} ~ ${formatYearMonth(dateEndYm)}`,
+          : `${dateFilterType === "application" ? "출원일" : "등록일"} ${formatYearMonth(dateStartYm)} ~ ${formatYearMonth(dateEndYm)}`,
       ],
       ["최대 수집 건수", `${maxResults}건`],
       ["공개전문 PDF", downloadPdf ? "수집·저장" : "수집하지 않음"],
@@ -126,44 +214,82 @@ export default function RequestPage() {
           .map((option) => option.label)
           .join(", ") || "기본 제목만",
       ],
-    ],
-    [
-      reportTitle,
-      reviewPurpose,
-      searchField,
-      queryText,
-      dateFilterType,
-      dateFilterLabel,
-      dateStartYm,
-      dateEndYm,
-      maxResults,
-      downloadPdf,
-      outputFields,
-    ],
-  );
+    ];
+  }, [
+    activeConditions,
+    reportTitle,
+    reviewPurpose,
+    dateFilterType,
+    dateStartYm,
+    dateEndYm,
+    maxResults,
+    downloadPdf,
+    outputFields,
+  ]);
 
-  function selectField(field: SearchField) {
-    setSearchField(field);
-    setQueryText("");
+  function updateRow(id: string, patch: Partial<ConditionRow>) {
+    setConditions((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
     setError("");
   }
 
-  function rowValue(field: SearchField): string {
-    return searchField === field ? queryText : "";
+  function addRow(category: Category, afterId: string) {
+    setConditions((current) => {
+      const categoryRows = current.filter((row) => row.category === category);
+      const options = CATEGORY_OPTIONS[category];
+      const used = new Set(categoryRows.map((row) => row.field));
+      const nextOption = options.find((option) => !used.has(option.value));
+
+      if (!nextOption) return current;
+
+      const index = current.findIndex((row) => row.id === afterId);
+      const newRow: ConditionRow = {
+        id: `${category}-${Date.now()}`,
+        category,
+        field: nextOption.value,
+        value: "",
+        operator: "AND",
+      };
+
+      const copy = [...current];
+      copy.splice(index + 1, 0, newRow);
+      return copy;
+    });
   }
 
-  function setRowValue(field: SearchField, value: string) {
-    setSearchField(field);
-    setQueryText(value);
-    setError("");
+  function removeRow(id: string, category: Category) {
+    setConditions((current) => {
+      const categoryCount = current.filter((row) => row.category === category).length;
+      if (categoryCount <= 1) return current;
+      return current.filter((row) => row.id !== id);
+    });
   }
 
   function validateInput(): boolean {
     setError("");
-    if (queryText.trim().length < 2) {
-      setError("검색어는 두 글자 이상 입력하세요.");
+
+    if (activeConditions.length === 0) {
+      setError("검색 조건을 한 개 이상 입력하세요.");
       return false;
     }
+
+    if (activeConditions.some((row) => row.value.trim().length < 2)) {
+      setError("입력한 검색어는 두 글자 이상이어야 합니다.");
+      return false;
+    }
+
+    const unsupported = activeConditions.find((row) => !fieldSupported(row.field));
+    if (unsupported) {
+      setError(`${fieldLabel(unsupported.field)} 항목은 현재 KIPRIS Open API 연결 준비 중입니다.`);
+      return false;
+    }
+
+    if (activeConditions.length > 1) {
+      setError("AND/OR 복수 조건 검색 UI는 준비되었으며, 현재 서버 검색엔진은 다음 배포에서 복수 조건 실행을 연결합니다. 지금은 한 조건만 입력해 주세요.");
+      return false;
+    }
+
     if (reportTitle.trim().length > 100) {
       setError("결과표 제목은 100자 이하로 입력하세요.");
       return false;
@@ -202,13 +328,13 @@ export default function RequestPage() {
     setError("");
 
     try {
-      const query = queryText.trim();
+      const query = primaryCondition.value.trim();
       const response = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           queryText: query,
-          searchField,
+          searchField: primaryCondition.field,
           dateFilterType,
           dateStartYm: dateFilterType === "none" ? "" : dateStartYm,
           dateEndYm: dateFilterType === "none" ? "" : dateEndYm,
@@ -244,11 +370,7 @@ export default function RequestPage() {
         `/jobs/${encodeURIComponent(result.id)}?token=${encodeURIComponent(result.token)}`,
       );
     } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "작업을 등록하지 못했습니다.",
-      );
+      setError(caught instanceof Error ? caught.message : "작업을 등록하지 못했습니다.");
     } finally {
       setSubmitting(false);
     }
@@ -260,9 +382,7 @@ export default function RequestPage() {
         <div>
           <p className="eyebrow">KIPRIS COLLECTION REQUEST</p>
           <h1>특허 수집·검토 요청</h1>
-          <p className="page-description">
-            검색 조건과 출력 항목을 입력한 뒤 검토 화면에서 최종 확인합니다.
-          </p>
+          <p className="page-description">검색 조건과 출력 항목을 입력한 뒤 검토 화면에서 최종 확인합니다.</p>
         </div>
         <div className="step-indicator" aria-label="입력 단계">
           <span className={step === "input" ? "active" : "done"}>1 입력</span>
@@ -304,7 +424,7 @@ export default function RequestPage() {
           <div className="form-section">
             <div className="section-heading">
               <h2>2. 검색 조건</h2>
-              <p>첨부한 KIPRIS 화면과 유사하게 검색 항목을 분야별로 배치했습니다.</p>
+              <p>KIPRIS 화면처럼 분야별 드롭다운, AND/OR 선택, + 행 추가 방식을 적용했습니다.</p>
             </div>
 
             <div
@@ -317,111 +437,68 @@ export default function RequestPage() {
               }}
             >
               <div style={{ minWidth: "900px" }}>
-                <div style={rowStyle}>
-                  <label style={labelStyle}>자유검색(전문)</label>
-                  <div style={{ gridColumn: "2 / 3" }} />
-                  <input
-                    aria-label="자유검색"
-                    value={rowValue("word")}
-                    onFocus={() => searchField !== "word" && selectField("word")}
-                    onChange={(event) => setRowValue("word", event.target.value)}
-                    placeholder={'예) 자동차 엔진  (구문검색: "휴대폰케이스")'}
-                  />
-                  <div style={andStyle}>AND</div>
-                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
-                </div>
+                {conditions.map((row, index) => {
+                  const options = CATEGORY_OPTIONS[row.category];
+                  const categoryRows = conditions.filter((item) => item.category === row.category);
+                  const showCategoryLabel = categoryRows[0]?.id === row.id;
+                  const canAdd = categoryRows.length < options.length;
+                  const canRemove = categoryRows.length > 1;
 
-                <div style={rowStyle}>
-                  <label style={labelStyle}>내용검색</label>
-                  <select
-                    value={contentField}
-                    onChange={(event) => {
-                      const field = event.target.value as SearchField;
-                      setContentField(field);
-                      selectField(field);
-                    }}
-                  >
-                    <option value="inventionTitle">발명의명칭(TL)</option>
-                  </select>
-                  <input
-                    aria-label="내용검색"
-                    value={rowValue(contentField)}
-                    onFocus={() => searchField !== contentField && selectField(contentField)}
-                    onChange={(event) => setRowValue(contentField, event.target.value)}
-                    placeholder={'예) 휴대폰 터치스크린, 전자*화폐, "휴대폰케이스"'}
-                  />
-                  <div style={andStyle}>AND</div>
-                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
-                </div>
+                  return (
+                    <div style={rowStyle} key={row.id}>
+                      <label style={labelStyle}>{showCategoryLabel ? CATEGORY_LABELS[row.category] : ""}</label>
 
-                <div style={rowStyle}>
-                  <label style={labelStyle}>번호정보</label>
-                  <select
-                    value={numberField}
-                    onChange={(event) => {
-                      const field = event.target.value as SearchField;
-                      setNumberField(field);
-                      selectField(field);
-                    }}
-                  >
-                    <option value="applicationNumber">출원번호(AN)</option>
-                    <option value="registerNumber">등록번호(GN)</option>
-                    <option value="publicationNumber">공고번호(PN)</option>
-                  </select>
-                  <input
-                    aria-label="번호정보"
-                    value={rowValue(numberField)}
-                    onFocus={() => searchField !== numberField && selectField(numberField)}
-                    onChange={(event) => setRowValue(numberField, event.target.value)}
-                    placeholder="예) 1020150123456"
-                  />
-                  <div style={andStyle}>AND</div>
-                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
-                </div>
+                      {row.category === "word" ? (
+                        <div />
+                      ) : (
+                        <select
+                          value={row.field}
+                          onChange={(event) => updateRow(row.id, { field: event.target.value as UiSearchField })}
+                        >
+                          {options.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}{option.supported ? "" : " · 준비중"}
+                            </option>
+                          ))}
+                        </select>
+                      )}
 
-                <div style={rowStyle}>
-                  <label style={labelStyle}>분류정보</label>
-                  <select value="ipcNumber" onChange={() => undefined}>
-                    <option value="ipcNumber">IPC</option>
-                  </select>
-                  <input
-                    aria-label="IPC"
-                    value={rowValue("ipcNumber")}
-                    onFocus={() => searchField !== "ipcNumber" && selectField("ipcNumber")}
-                    onChange={(event) => setRowValue("ipcNumber", event.target.value)}
-                    placeholder="예) G06Q + H04Q"
-                  />
-                  <div style={andStyle}>AND</div>
-                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
-                </div>
+                      <input
+                        aria-label={`${CATEGORY_LABELS[row.category]} 검색어`}
+                        value={row.value}
+                        onChange={(event) => updateRow(row.id, { value: event.target.value })}
+                        maxLength={200}
+                        placeholder={placeholderFor(row.category)}
+                      />
 
-                <div style={rowStyle}>
-                  <label style={labelStyle}>인명정보</label>
-                  <select
-                    value={personField}
-                    onChange={(event) => {
-                      const field = event.target.value as SearchField;
-                      setPersonField(field);
-                      selectField(field);
-                    }}
-                  >
-                    <option value="applicant">출원인(AP)</option>
-                  </select>
-                  <input
-                    aria-label="인명정보"
-                    value={rowValue(personField)}
-                    onFocus={() => searchField !== personField && selectField(personField)}
-                    onChange={(event) => setRowValue(personField, event.target.value)}
-                    placeholder="예) 대한민국, 삼성중공업"
-                  />
-                  <div style={andStyle}>AND</div>
-                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
-                </div>
+                      <select
+                        aria-label="AND OR 조건"
+                        value={row.operator}
+                        onChange={(event) => updateRow(row.id, { operator: event.target.value as LogicalOperator })}
+                        style={{ minHeight: "46px", fontWeight: 800 }}
+                      >
+                        <option value="AND">AND</option>
+                        <option value="OR">OR</option>
+                      </select>
+
+                      <button
+                        type="button"
+                        className="button secondary"
+                        style={{ minWidth: "36px", padding: "8px 0", fontSize: "21px" }}
+                        onClick={() => (canAdd ? addRow(row.category, row.id) : canRemove ? removeRow(row.id, row.category) : undefined)}
+                        title={canAdd ? "다음 검색 항목 추가" : canRemove ? "이 행 삭제" : "추가 항목 없음"}
+                        disabled={!canAdd && !canRemove}
+                      >
+                        {canAdd ? "＋" : canRemove ? "×" : ""}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
             <p style={{ margin: "10px 0 0", color: "#627084", fontSize: "13px" }}>
-              현재 수집 엔진은 한 번의 요청에서 하나의 검색 항목을 사용하므로, 입력한 행이 실제 검색 조건으로 적용됩니다.
+              + 버튼을 누르면 해당 분야의 드롭다운 순서에 따라 다음 항목이 추가됩니다. 추가된 행은 × 버튼으로 삭제할 수 있습니다.
             </p>
 
             <div className="form-grid three-columns" style={{ marginTop: "20px" }}>
@@ -443,23 +520,11 @@ export default function RequestPage() {
                   <div className="field-group">
                     <label htmlFor="dateStartYear">시작 연월</label>
                     <div style={{ display: "flex", gap: "8px" }}>
-                      <select
-                        id="dateStartYear"
-                        value={dateStartYear}
-                        onChange={(event) => setDateStartYear(event.target.value)}
-                      >
-                        {YEAR_OPTIONS.map((year) => (
-                          <option key={year} value={year}>{year}년</option>
-                        ))}
+                      <select id="dateStartYear" value={dateStartYear} onChange={(event) => setDateStartYear(event.target.value)}>
+                        {YEAR_OPTIONS.map((year) => <option key={year} value={year}>{year}년</option>)}
                       </select>
-                      <select
-                        aria-label="시작 월"
-                        value={dateStartMonth}
-                        onChange={(event) => setDateStartMonth(event.target.value)}
-                      >
-                        {MONTH_OPTIONS.map((month) => (
-                          <option key={month} value={month}>{month}월</option>
-                        ))}
+                      <select aria-label="시작 월" value={dateStartMonth} onChange={(event) => setDateStartMonth(event.target.value)}>
+                        {MONTH_OPTIONS.map((month) => <option key={month} value={month}>{month}월</option>)}
                       </select>
                     </div>
                   </div>
@@ -467,23 +532,11 @@ export default function RequestPage() {
                   <div className="field-group">
                     <label htmlFor="dateEndYear">종료 연월</label>
                     <div style={{ display: "flex", gap: "8px" }}>
-                      <select
-                        id="dateEndYear"
-                        value={dateEndYear}
-                        onChange={(event) => setDateEndYear(event.target.value)}
-                      >
-                        {YEAR_OPTIONS.map((year) => (
-                          <option key={year} value={year}>{year}년</option>
-                        ))}
+                      <select id="dateEndYear" value={dateEndYear} onChange={(event) => setDateEndYear(event.target.value)}>
+                        {YEAR_OPTIONS.map((year) => <option key={year} value={year}>{year}년</option>)}
                       </select>
-                      <select
-                        aria-label="종료 월"
-                        value={dateEndMonth}
-                        onChange={(event) => setDateEndMonth(event.target.value)}
-                      >
-                        {MONTH_OPTIONS.map((month) => (
-                          <option key={month} value={month}>{month}월</option>
-                        ))}
+                      <select aria-label="종료 월" value={dateEndMonth} onChange={(event) => setDateEndMonth(event.target.value)}>
+                        {MONTH_OPTIONS.map((month) => <option key={month} value={month}>{month}월</option>)}
                       </select>
                     </div>
                   </div>
@@ -492,11 +545,7 @@ export default function RequestPage() {
 
               <div className="field-group">
                 <label htmlFor="maxResults">최대 수집 건수</label>
-                <select
-                  id="maxResults"
-                  value={maxResults}
-                  onChange={(event) => setMaxResults(Number(event.target.value))}
-                >
+                <select id="maxResults" value={maxResults} onChange={(event) => setMaxResults(Number(event.target.value))}>
                   <option value={10}>10건</option>
                   <option value={30}>30건</option>
                   <option value={50}>50건</option>
@@ -505,11 +554,7 @@ export default function RequestPage() {
               </div>
 
               <label className="option-card compact-option">
-                <input
-                  type="checkbox"
-                  checked={downloadPdf}
-                  onChange={(event) => setDownloadPdf(event.target.checked)}
-                />
+                <input type="checkbox" checked={downloadPdf} onChange={(event) => setDownloadPdf(event.target.checked)} />
                 <span>
                   <strong>공개전문 PDF 저장</strong>
                   <small>가능한 특허의 공개전문을 Storage에 저장</small>
@@ -572,12 +617,7 @@ export default function RequestPage() {
           {error && <p className="error">{error}</p>}
 
           <div className="form-actions split">
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() => setStep("input")}
-              disabled={submitting}
-            >
+            <button type="button" className="button secondary" onClick={() => setStep("input")} disabled={submitting}>
               입력 수정
             </button>
             <button type="button" onClick={submitJob} disabled={submitting}>
