@@ -3,6 +3,7 @@ import { adminDb } from "../../../../lib/firebase-admin";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PUBLIC_VIEW_TOKEN = "public";
 
 function toPlain(value: unknown): unknown {
   if (value === null || value === undefined) return value;
@@ -32,7 +33,10 @@ export async function GET(
     const token = request.nextUrl.searchParams.get("token")?.trim() || "";
     const includeResults = request.nextUrl.searchParams.get("includeResults") === "1";
 
-    if (!UUID_PATTERN.test(id) || (token && !UUID_PATTERN.test(token))) {
+    if (
+      !UUID_PATTERN.test(id) ||
+      (token && token !== PUBLIC_VIEW_TOKEN && !UUID_PATTERN.test(token))
+    ) {
       return NextResponse.json(
         { error: "작업 확인 정보가 올바르지 않습니다." },
         { status: 400 },
@@ -48,8 +52,13 @@ export async function GET(
 
     const jobData = jobSnapshot.data() ?? {};
 
-    // 토큰이 전달된 경우에는 기존처럼 검증한다. 토큰이 없으면 공개 결과 조회로 허용한다.
-    if (token && String(jobData.public_token ?? "") !== token) {
+    // 실제 UUID 토큰이 전달된 경우에만 소유자 토큰을 검증한다.
+    // "public"은 다른 PC에서도 결과 장표를 볼 수 있게 하는 읽기 전용 표식이다.
+    if (
+      token &&
+      token !== PUBLIC_VIEW_TOKEN &&
+      String(jobData.public_token ?? "") !== token
+    ) {
       return NextResponse.json({ error: "작업을 찾을 수 없습니다." }, { status: 404 });
     }
 
