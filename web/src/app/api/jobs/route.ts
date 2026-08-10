@@ -23,6 +23,12 @@ const ALLOWED_FIELDS = new Set([
   "registerNumber",
 ]);
 
+const ALLOWED_DATE_FILTER_TYPES = new Set([
+  "none",
+  "application",
+  "registration",
+]);
+
 type FastPatent = {
   application_number: string;
   invention_title: string;
@@ -71,6 +77,9 @@ function patentDocumentId(applicationNumber: string): string {
 async function createPublicJob(params: {
   queryText: string;
   searchField: string;
+  dateFilterType: string;
+  dateStartYm: string;
+  dateEndYm: string;
   maxResults: number;
   downloadPdf: boolean;
   requesterHash: string;
@@ -140,6 +149,9 @@ async function createPublicJob(params: {
       requested_by: null,
       query_text: params.queryText,
       search_field: params.searchField,
+      date_filter_type: params.dateFilterType,
+      date_start_ym: params.dateStartYm,
+      date_end_ym: params.dateEndYm,
       max_results: params.maxResults,
       download_pdf: params.downloadPdf,
       requester_hash: params.requesterHash,
@@ -576,6 +588,21 @@ export async function POST(
         ? body.searchField
         : "";
 
+    const dateFilterType =
+      typeof body.dateFilterType === "string"
+        ? body.dateFilterType
+        : "none";
+
+    const dateStartYm =
+      typeof body.dateStartYm === "string"
+        ? body.dateStartYm.trim()
+        : "";
+
+    const dateEndYm =
+      typeof body.dateEndYm === "string"
+        ? body.dateEndYm.trim()
+        : "";
+
     const maxResults =
       Number(body.maxResults);
 
@@ -657,6 +684,29 @@ export async function POST(
       );
     }
 
+    if (!ALLOWED_DATE_FILTER_TYPES.has(dateFilterType)) {
+      return NextResponse.json(
+        {
+          error: "지원하지 않는 기간 기준입니다.",
+        },
+        { status: 400 },
+      );
+    }
+
+    if (
+      dateFilterType !== "none" &&
+      (!/^\d{6}$/.test(dateStartYm) ||
+        !/^\d{6}$/.test(dateEndYm) ||
+        dateStartYm > dateEndYm)
+    ) {
+      return NextResponse.json(
+        {
+          error: "검색 기간의 시작·종료 연월을 확인하세요.",
+        },
+        { status: 400 },
+      );
+    }
+
     if (
       !Number.isInteger(maxResults) ||
       maxResults < 1 ||
@@ -681,6 +731,11 @@ export async function POST(
       await createPublicJob({
         queryText,
         searchField,
+        dateFilterType,
+        dateStartYm:
+          dateFilterType === "none" ? "" : dateStartYm,
+        dateEndYm:
+          dateFilterType === "none" ? "" : dateEndYm,
         maxResults,
         downloadPdf,
         requesterHash,
@@ -700,20 +755,22 @@ export async function POST(
 
     let fastPath = false;
 
-    try {
-      fastPath =
-        await tryFastPath(
-          jobId,
-          searchField,
-          queryText,
-          maxResults,
-          downloadPdf,
+    if (dateFilterType === "none") {
+      try {
+        fastPath =
+          await tryFastPath(
+            jobId,
+            searchField,
+            queryText,
+            maxResults,
+            downloadPdf,
+          );
+      } catch (caught) {
+        console.error(
+          "KIPRIS fast path failed; falling back to GitHub:",
+          caught,
         );
-    } catch (caught) {
-      console.error(
-        "KIPRIS fast path failed; falling back to GitHub:",
-        caught,
-      );
+      }
     }
 
     if (!fastPath) {
