@@ -111,9 +111,9 @@ export default function JobsPage() {
 
       <p className="notice">
         이 목록은 Firebase 데이터베이스의 작업 기록을 공용으로 표시합니다. 누구나 작업명,
-        검색어, 진행상태와 결과 건수를 볼 수 있습니다. 상세 결과 열람과 삭제는 해당 작업의
-        확인용 토큰을 가진 브라우저에서만 가능합니다. 삭제 시 작업 기록과 결과 연결정보는
-        데이터베이스에서 삭제되며 특허 원문과 PDF 원본은 유지됩니다.
+        검색어, 진행상태와 결과 건수를 보고 결과 장표와 저장된 특허 PDF를 열 수 있습니다.
+        요청·진행 검토와 삭제는 해당 작업의 확인용 토큰을 가진 브라우저에서만 가능합니다.
+        삭제 시 작업 기록과 결과 연결정보는 데이터베이스에서 삭제되며 특허 원문과 PDF 원본은 유지됩니다.
       </p>
 
       {message && <p className="notice">{message}</p>}
@@ -130,9 +130,8 @@ export default function JobsPage() {
           const detailUrl = job.token
             ? `/jobs/${encodeURIComponent(job.id)}?token=${encodeURIComponent(job.token)}`
             : "";
-          const reportUrl = job.token
-            ? `/reports/${encodeURIComponent(job.id)}?token=${encodeURIComponent(job.token)}`
-            : "";
+          const reportToken = job.token || "public";
+          const reportUrl = `/reports/${encodeURIComponent(job.id)}?token=${encodeURIComponent(reportToken)}`;
 
           return (
             <article key={job.id} className="card job-card">
@@ -178,7 +177,7 @@ export default function JobsPage() {
               )}
 
               <div className="job-actions">
-                {job.token ? (
+                {job.token && (
                   <>
                     <button
                       className="button danger-outline"
@@ -190,13 +189,11 @@ export default function JobsPage() {
                     <Link className="button secondary" href={detailUrl}>
                       요청·진행 검토
                     </Link>
-                    <Link className="button" href={reportUrl}>
-                      결과 장표 보기
-                    </Link>
                   </>
-                ) : (
-                  <span className="notice subtle">공개 목록 보기 전용</span>
                 )}
+                <Link className="button" href={reportUrl}>
+                  결과 장표 보기
+                </Link>
               </div>
             </article>
           );
