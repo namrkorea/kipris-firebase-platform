@@ -208,14 +208,20 @@ def process_job(job: dict[str, Any]) -> None:
     job_id = str(job["id"])
     query_text = str(job["query_text"])
     search_field = str(job["search_field"])
+    date_filter_type = str(job.get("date_filter_type") or "none")
+    date_start_ym = str(job.get("date_start_ym") or "")
+    date_end_ym = str(job.get("date_end_ym") or "")
     max_results = int(job["max_results"])
     download_pdf = bool(job["download_pdf"])
 
     logger.info(
-        "작업 시작 | id=%s | field=%s | query=%s | detail=%s | pdf=%s",
+        "작업 시작 | id=%s | field=%s | query=%s | date=%s:%s-%s | detail=%s | pdf=%s",
         job_id,
         search_field,
         query_text,
+        date_filter_type,
+        date_start_ym,
+        date_end_ym,
         FETCH_DETAIL_XML,
         download_pdf,
     )
@@ -224,6 +230,9 @@ def process_job(job: dict[str, Any]) -> None:
         search_field=search_field,
         query_text=query_text,
         max_results=max_results,
+        date_filter_type=date_filter_type,
+        date_start_ym=date_start_ym,
+        date_end_ym=date_end_ym,
     )
 
     patent_ids = bulk_save_search_results(job_id, items)
