@@ -5,9 +5,9 @@ on:
     types: [kipris-job-created]
   workflow_dispatch:
   schedule:
-    # 즉시 실행이 실패했을 때 남은 대기 작업을 보완 처리합니다.
-    # 매시 17분에 실행합니다.
-    - cron: "17 * * * *"
+    # 즉시 실행이 실패하거나 누락됐을 때 남은 대기 작업을 보완 처리합니다.
+    # 최대 대기시간을 줄이기 위해 5분마다 실행합니다.
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
