@@ -124,8 +124,49 @@ export async function GET(
       );
     }
 
+
+    const applicationNumber = String(
+      patent.application_number ?? "",
+      )
+      .replace(/[^0-9A-Za-z_-]+/g, "")
+      .trim();
+
+    const candidatePaths = Array.from(
+      new Set(
+      [
+      storagePath,
+      applicationNumber
+        ? `${applicationNumber}/${applicationNumber}.pdf`
+        : "",
+      ].filter(Boolean),
+      ),
+  );
+
+  let pdfFile: ReturnType<typeof adminBucket.file> | null = null;
+
+  for (const candidatePath of candidatePaths) {
+    const candidateFile = adminBucket.file(candidatePath);
+    const [exists] = await candidateFile.exists();
+
+  if (exists) {
+    pdfFile = candidateFile;
+    break;
+    }
+  }
+
+  if (!pdfFile) {
+    return NextResponse.json(
+    {
+      error: "Firebase Storage에서 PDF를 찾을 수 없습니다.",
+    },
+    { status: 404 },
+   );
+  }
+
+  const [pdfBuffer] = await pdfFile.download();
+    
     // 5. PDF 다운로드
-    const [pdfBuffer] = await file.download();
+  
 
     const originalName = String(
       patent.pdf_original_name ??
