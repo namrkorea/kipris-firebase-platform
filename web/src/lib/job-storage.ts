@@ -120,3 +120,45 @@ export function getOutputFields(job?: StoredJob): OutputField[] {
     ? job.outputFields
     : DEFAULT_OUTPUT_FIELDS;
 }
+
+export function exportStoredJobs(): string {
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    jobs: readStoredJobs(),
+  };
+  return JSON.stringify(payload);
+}
+
+export function importStoredJobs(raw: string): number {
+  if (typeof window === "undefined") return 0;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("작업 접근키 형식이 올바르지 않습니다.");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("작업 접근키 형식이 올바르지 않습니다.");
+  }
+
+  const value = parsed as Record<string, unknown>;
+  const source = Array.isArray(value.jobs) ? value.jobs : [];
+  const imported = source
+    .map(normalizeStoredJob)
+    .filter((item): item is StoredJob => item !== null);
+
+  if (imported.length === 0) {
+    throw new Error("복원할 작업 접근정보가 없습니다.");
+  }
+
+  const existing = readStoredJobs();
+  const merged = [...imported, ...existing].filter(
+    (item, index, all) => all.findIndex((other) => other.id === item.id) === index,
+  ).slice(0, 50);
+
+  window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(merged));
+  return imported.length;
+}
