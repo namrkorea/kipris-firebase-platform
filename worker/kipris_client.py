@@ -67,6 +67,36 @@ def _first_value(value: Any) -> str:
     return str(value).strip()
 
 
+def _year_month(value: str) -> str:
+    digits = "".join(character for character in str(value) if character.isdigit())
+    return digits[:6] if len(digits) >= 6 else ""
+
+
+def _normalize_patent(item: dict[str, Any]) -> dict[str, Any] | None:
+    application_number = _first_value(item.get("applicationNumber"))
+    if not application_number:
+        return None
+
+    return {
+        "application_number": application_number,
+        "invention_title": _first_value(item.get("inventionTitle")),
+        "applicant_name": _first_value(item.get("applicantName")),
+        "ipc_number": _first_value(item.get("ipcNumber")),
+        "register_status": _first_value(item.get("registerStatus")),
+        "register_number": _first_value(item.get("registerNumber")),
+        "register_date": _first_value(item.get("registerDate")),
+        "application_date": _first_value(item.get("applicationDate")),
+        "open_number": _first_value(item.get("openNumber")),
+        "open_date": _first_value(item.get("openDate")),
+        "publication_number": _first_value(item.get("publicationNumber")),
+        "publication_date": _first_value(item.get("publicationDate")),
+        "abstract": _first_value(item.get("astrtCont")),
+        "drawing_url": _first_value(item.get("drawing")),
+        "big_drawing_url": _first_value(item.get("bigDrawing")),
+        "raw_search_json": item,
+    }
+
+
 @dataclass(frozen=True)
 class KiprisConfig:
     service_key: str
@@ -157,6 +187,9 @@ class KiprisClient:
         search_field: str,
         query_text: str,
         max_results: int,
+        date_filter_type: str = "none",
+        date_start_ym: str = "",
+        date_end_ym: str = "",
     ) -> list[dict[str, Any]]:
         allowed = {
             "word",
@@ -170,48 +203,108 @@ class KiprisClient:
         if search_field not in allowed:
             raise KiprisError(f"지원하지 않는 검색항목: {search_field}")
 
-        rows = min(max(max_results, 1), 100)
-        params: dict[str, Any] = {
-            search_field: query_text,
-            "pageNo": 1,
-            "numOfRows": rows,
-            "sortSpec": "PD",
-            "descSort": "true",
-        }
-        root, _ = self._get_xml(self.config.search_url, params)
-        items = _find_items(root)
+        if date_filter_type not in {"none", "application", "registration"}:
+            raise KiprisError(f"지원하지 않는 기간 기준: {date_filter_type}")
 
-        normalized: list[dict[str, Any]] = []
+        rows = min(max(max_results, 1), 100)
+
+        if date_filter_type == "none":
+            params: dict[str, Any] = {
+                search_field: query_text,
+                "pageNo": 1,
+                "numOfRows": rows,
+                "sortSpec": "PD",
+                "descSort": "true",
+            }
+            root, _ = self._get_xml(self.config.search_url, params)
+            items = _find_items(root)
+
+            normalized: list[dict[str, Any]] = []
+            seen: set[str] = set()
+
+            for item in items:
+                patent = _normalize_patent(item)
+                if patent is None:
+                    continue
+                application_number = str(patent["application_number"])
+                if application_number in seen:
+                    continue
+                seen.add(application_number)
+                normalized.append(patent)
+
+                if len(normalized) >= rows:
+                    break
+
+            return normalized
+
+        if (
+            len(date_start_ym) != 6
+            or len(date_end_ym) != 6
+            or not date_start_ym.isdigit()
+            or not date_end_ym.isdigit()
+            or date_start_ym > date_end_ym
+        ):
+            raise KiprisError("검색 기간의 시작·종료 연월이 올바르지 않습니다.")
+
+        target_date_key = (
+            "application_date"
+            if date_filter_type == "application"
+            else "register_date"
+        )
+        sort_spec = "AD" if date_filter_type == "application" else "GD"
+        page_size = 100
+        max_pages = 50
+        normalized = []
         seen: set[str] = set()
 
-        for item in items:
-            application_number = _first_value(item.get("applicationNumber"))
-            if not application_number or application_number in seen:
-                continue
-            seen.add(application_number)
+        for page_no in range(1, max_pages + 1):
+            params = {
+                search_field: query_text,
+                "pageNo": page_no,
+                "numOfRows": page_size,
+                "sortSpec": sort_spec,
+                "descSort": "true",
+            }
+            root, _ = self._get_xml(self.config.search_url, params)
+            items = _find_items(root)
 
-            normalized.append(
-                {
-                    "application_number": application_number,
-                    "invention_title": _first_value(item.get("inventionTitle")),
-                    "applicant_name": _first_value(item.get("applicantName")),
-                    "ipc_number": _first_value(item.get("ipcNumber")),
-                    "register_status": _first_value(item.get("registerStatus")),
-                    "register_number": _first_value(item.get("registerNumber")),
-                    "register_date": _first_value(item.get("registerDate")),
-                    "application_date": _first_value(item.get("applicationDate")),
-                    "open_number": _first_value(item.get("openNumber")),
-                    "open_date": _first_value(item.get("openDate")),
-                    "publication_number": _first_value(item.get("publicationNumber")),
-                    "publication_date": _first_value(item.get("publicationDate")),
-                    "abstract": _first_value(item.get("astrtCont")),
-                    "drawing_url": _first_value(item.get("drawing")),
-                    "big_drawing_url": _first_value(item.get("bigDrawing")),
-                    "raw_search_json": item,
-                }
-            )
+            if not items:
+                break
 
-            if len(normalized) >= rows:
+            page_has_date = False
+            page_has_older_date = False
+
+            for item in items:
+                patent = _normalize_patent(item)
+                if patent is None:
+                    continue
+
+                application_number = str(patent["application_number"])
+                if application_number in seen:
+                    continue
+                seen.add(application_number)
+
+                year_month = _year_month(str(patent.get(target_date_key) or ""))
+                if not year_month:
+                    continue
+
+                page_has_date = True
+
+                if year_month < date_start_ym:
+                    page_has_older_date = True
+                    continue
+
+                if year_month > date_end_ym:
+                    continue
+
+                normalized.append(patent)
+                if len(normalized) >= rows:
+                    return normalized
+
+            if len(items) < page_size:
+                break
+
+            if page_has_date and page_has_older_date:
                 break
 
         return normalized
