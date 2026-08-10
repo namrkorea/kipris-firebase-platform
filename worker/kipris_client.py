@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import random
+import re
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -70,6 +71,78 @@ def _first_value(value: Any) -> str:
 def _year_month(value: str) -> str:
     digits = "".join(character for character in str(value) if character.isdigit())
     return digits[:6] if len(digits) >= 6 else ""
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def _normalize_identifier(value: str) -> str:
+    return "".join(character for character in str(value or "") if character.isalnum()).casefold()
+
+
+def _split_people(value: str) -> list[str]:
+    return [
+        _normalize_text(part)
+        for part in re.split(r"[;,|/\n]+", str(value or ""))
+        if _normalize_text(part)
+    ]
+
+
+def _ipc_tokens(value: str) -> set[str]:
+    normalized = str(value or "").upper()
+    tokens = re.findall(r"[A-HY]\d{2}[A-Z]\s*\d+(?:/\d+)?", normalized)
+    return {_normalize_identifier(token) for token in tokens}
+
+
+def _contains_exact_term(value: str, query: str) -> bool:
+    haystack = _normalize_text(value)
+    needle = _normalize_text(query)
+    if not haystack or not needle:
+        return False
+
+    pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(needle)}(?![0-9A-Za-z가-힣])"
+    return re.search(pattern, haystack, flags=re.IGNORECASE) is not None
+
+
+def _matches_exact_search(
+    patent: dict[str, Any],
+    search_field: str,
+    query_text: str,
+) -> bool:
+    query = str(query_text or "").strip()
+    if not query:
+        return False
+
+    if search_field == "word":
+        return _contains_exact_term(str(patent.get("invention_title") or ""), query) or _contains_exact_term(
+            str(patent.get("abstract") or ""), query
+        )
+
+    if search_field == "inventionTitle":
+        return _normalize_text(str(patent.get("invention_title") or "")) == _normalize_text(query)
+
+    if search_field == "applicant":
+        normalized_query = _normalize_text(query)
+        applicant_value = str(patent.get("applicant_name") or "")
+        return _normalize_text(applicant_value) == normalized_query or normalized_query in _split_people(applicant_value)
+
+    if search_field == "ipcNumber":
+        requested = [part.strip() for part in re.split(r"\s*\+\s*", query) if part.strip()]
+        requested_tokens = {_normalize_identifier(part) for part in requested}
+        actual_tokens = _ipc_tokens(str(patent.get("ipc_number") or ""))
+        return bool(requested_tokens) and requested_tokens.issubset(actual_tokens)
+
+    field_map = {
+        "applicationNumber": "application_number",
+        "publicationNumber": "publication_number",
+        "registerNumber": "register_number",
+    }
+    patent_key = field_map.get(search_field)
+    if patent_key:
+        return _normalize_identifier(str(patent.get(patent_key) or "")) == _normalize_identifier(query)
+
+    return False
 
 
 def _normalize_patent(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -212,7 +285,7 @@ class KiprisClient:
             params: dict[str, Any] = {
                 search_field: query_text,
                 "pageNo": 1,
-                "numOfRows": rows,
+                "numOfRows": 100,
                 "sortSpec": "PD",
                 "descSort": "true",
             }
@@ -225,6 +298,8 @@ class KiprisClient:
             for item in items:
                 patent = _normalize_patent(item)
                 if patent is None:
+                    continue
+                if not _matches_exact_search(patent, search_field, query_text):
                     continue
                 application_number = str(patent["application_number"])
                 if application_number in seen:
@@ -277,6 +352,8 @@ class KiprisClient:
             for item in items:
                 patent = _normalize_patent(item)
                 if patent is None:
+                    continue
+                if not _matches_exact_search(patent, search_field, query_text):
                     continue
 
                 application_number = str(patent["application_number"])
