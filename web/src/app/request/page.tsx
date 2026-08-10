@@ -35,42 +35,40 @@ const OUTPUT_OPTIONS: Array<{
   label: string;
   description: string;
 }> = [
-  {
-    value: "applicationNumber",
-    label: "출원·공개번호",
-    description: "출원번호와 공개번호를 결과표에 표시",
-  },
-  {
-    value: "applicant",
-    label: "출원인",
-    description: "출원인 명칭을 표시",
-  },
-  {
-    value: "ipc",
-    label: "IPC",
-    description: "국제특허분류를 표시",
-  },
-  {
-    value: "dates",
-    label: "주요 일자",
-    description: "출원일·공개일·등록일을 표시",
-  },
-  {
-    value: "status",
-    label: "권리 상태",
-    description: "등록 상태와 등록번호를 표시",
-  },
-  {
-    value: "abstract",
-    label: "초록",
-    description: "특허별 초록을 결과표에 표시",
-  },
-  {
-    value: "pdf",
-    label: "PDF 저장 여부",
-    description: "공개전문 PDF 저장 여부를 표시",
-  },
+  { value: "applicationNumber", label: "출원·공개번호", description: "출원번호와 공개번호를 결과표에 표시" },
+  { value: "applicant", label: "출원인", description: "출원인 명칭을 표시" },
+  { value: "ipc", label: "IPC", description: "국제특허분류를 표시" },
+  { value: "dates", label: "주요 일자", description: "출원일·공개일·등록일을 표시" },
+  { value: "status", label: "권리 상태", description: "등록 상태와 등록번호를 표시" },
+  { value: "abstract", label: "초록", description: "특허별 초록을 결과표에 표시" },
+  { value: "pdf", label: "PDF 저장 여부", description: "공개전문 PDF 저장 여부를 표시" },
 ];
+
+const rowStyle = {
+  display: "grid",
+  gridTemplateColumns: "135px 240px minmax(280px, 1fr) 86px 34px",
+  gap: "8px",
+  alignItems: "center",
+  padding: "7px 0",
+} as const;
+
+const labelStyle = {
+  margin: 0,
+  fontWeight: 800,
+  color: "#26364b",
+} as const;
+
+const andStyle = {
+  minHeight: "46px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px solid #b9c5d4",
+  borderRadius: "9px",
+  background: "#fff",
+  fontWeight: 700,
+  color: "#394a61",
+} as const;
 
 function formatYearMonth(value: string): string {
   if (!/^\d{6}$/.test(value)) return value;
@@ -85,6 +83,9 @@ export default function RequestPage() {
   const [reviewPurpose, setReviewPurpose] = useState("");
   const [queryText, setQueryText] = useState("");
   const [searchField, setSearchField] = useState<SearchField>("word");
+  const [contentField, setContentField] = useState<SearchField>("inventionTitle");
+  const [numberField, setNumberField] = useState<SearchField>("registerNumber");
+  const [personField, setPersonField] = useState<SearchField>("applicant");
   const [dateFilterType, setDateFilterType] = useState<DateFilterType>("none");
   const [dateStartYear, setDateStartYear] = useState(String(CURRENT_YEAR - 5));
   const [dateStartMonth, setDateStartMonth] = useState("01");
@@ -92,9 +93,7 @@ export default function RequestPage() {
   const [dateEndMonth, setDateEndMonth] = useState(currentMonth);
   const [maxResults, setMaxResults] = useState(30);
   const [downloadPdf, setDownloadPdf] = useState(true);
-  const [outputFields, setOutputFields] = useState<OutputField[]>(
-    DEFAULT_OUTPUT_FIELDS,
-  );
+  const [outputFields, setOutputFields] = useState<OutputField[]>(DEFAULT_OUTPUT_FIELDS);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -143,6 +142,22 @@ export default function RequestPage() {
     ],
   );
 
+  function selectField(field: SearchField) {
+    setSearchField(field);
+    setQueryText("");
+    setError("");
+  }
+
+  function rowValue(field: SearchField): string {
+    return searchField === field ? queryText : "";
+  }
+
+  function setRowValue(field: SearchField, value: string) {
+    setSearchField(field);
+    setQueryText(value);
+    setError("");
+  }
+
   function validateInput(): boolean {
     setError("");
     if (queryText.trim().length < 2) {
@@ -190,9 +205,7 @@ export default function RequestPage() {
       const query = queryText.trim();
       const response = await fetch("/api/jobs", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           queryText: query,
           searchField,
@@ -228,9 +241,7 @@ export default function RequestPage() {
       });
 
       router.push(
-        `/jobs/${encodeURIComponent(result.id)}?token=${encodeURIComponent(
-          result.token,
-        )}`,
+        `/jobs/${encodeURIComponent(result.id)}?token=${encodeURIComponent(result.token)}`,
       );
     } catch (caught) {
       setError(
@@ -293,47 +304,133 @@ export default function RequestPage() {
           <div className="form-section">
             <div className="section-heading">
               <h2>2. 검색 조건</h2>
-              <p>KIPRIS Open API에 전달할 검색 조건입니다.</p>
+              <p>첨부한 KIPRIS 화면과 유사하게 검색 항목을 분야별로 배치했습니다.</p>
             </div>
-            <div className="form-grid three-columns">
-              <div className="field-group">
-                <label htmlFor="searchField">검색 항목</label>
-                <select
-                  id="searchField"
-                  value={searchField}
-                  onChange={(event) =>
-                    setSearchField(event.target.value as SearchField)
-                  }
-                >
-                  <option value="word">자유검색</option>
-                  <option value="inventionTitle">발명의 명칭</option>
-                  <option value="applicant">출원인</option>
-                  <option value="ipcNumber">IPC</option>
-                  <option value="applicationNumber">출원번호</option>
-                  <option value="publicationNumber">공고번호</option>
-                  <option value="registerNumber">등록번호</option>
-                </select>
-              </div>
 
-              <div className="field-group span-two">
-                <label htmlFor="query">검색어</label>
-                <input
-                  id="query"
-                  value={queryText}
-                  onChange={(event) => setQueryText(event.target.value)}
-                  maxLength={200}
-                  placeholder="예: FLNG, LNG 저장탱크, 삼성중공업"
-                />
-              </div>
+            <div
+              style={{
+                border: "1px solid #d9e0ea",
+                borderRadius: "14px",
+                padding: "16px 18px",
+                background: "#fbfcfe",
+                overflowX: "auto",
+              }}
+            >
+              <div style={{ minWidth: "900px" }}>
+                <div style={rowStyle}>
+                  <label style={labelStyle}>자유검색(전문)</label>
+                  <div style={{ gridColumn: "2 / 3" }} />
+                  <input
+                    aria-label="자유검색"
+                    value={rowValue("word")}
+                    onFocus={() => searchField !== "word" && selectField("word")}
+                    onChange={(event) => setRowValue("word", event.target.value)}
+                    placeholder={'예) 자동차 엔진  (구문검색: "휴대폰케이스")'}
+                  />
+                  <div style={andStyle}>AND</div>
+                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
+                </div>
 
+                <div style={rowStyle}>
+                  <label style={labelStyle}>내용검색</label>
+                  <select
+                    value={contentField}
+                    onChange={(event) => {
+                      const field = event.target.value as SearchField;
+                      setContentField(field);
+                      selectField(field);
+                    }}
+                  >
+                    <option value="inventionTitle">발명의명칭(TL)</option>
+                  </select>
+                  <input
+                    aria-label="내용검색"
+                    value={rowValue(contentField)}
+                    onFocus={() => searchField !== contentField && selectField(contentField)}
+                    onChange={(event) => setRowValue(contentField, event.target.value)}
+                    placeholder={'예) 휴대폰 터치스크린, 전자*화폐, "휴대폰케이스"'}
+                  />
+                  <div style={andStyle}>AND</div>
+                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
+                </div>
+
+                <div style={rowStyle}>
+                  <label style={labelStyle}>번호정보</label>
+                  <select
+                    value={numberField}
+                    onChange={(event) => {
+                      const field = event.target.value as SearchField;
+                      setNumberField(field);
+                      selectField(field);
+                    }}
+                  >
+                    <option value="applicationNumber">출원번호(AN)</option>
+                    <option value="registerNumber">등록번호(GN)</option>
+                    <option value="publicationNumber">공고번호(PN)</option>
+                  </select>
+                  <input
+                    aria-label="번호정보"
+                    value={rowValue(numberField)}
+                    onFocus={() => searchField !== numberField && selectField(numberField)}
+                    onChange={(event) => setRowValue(numberField, event.target.value)}
+                    placeholder="예) 1020150123456"
+                  />
+                  <div style={andStyle}>AND</div>
+                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
+                </div>
+
+                <div style={rowStyle}>
+                  <label style={labelStyle}>분류정보</label>
+                  <select value="ipcNumber" onChange={() => undefined}>
+                    <option value="ipcNumber">IPC</option>
+                  </select>
+                  <input
+                    aria-label="IPC"
+                    value={rowValue("ipcNumber")}
+                    onFocus={() => searchField !== "ipcNumber" && selectField("ipcNumber")}
+                    onChange={(event) => setRowValue("ipcNumber", event.target.value)}
+                    placeholder="예) G06Q + H04Q"
+                  />
+                  <div style={andStyle}>AND</div>
+                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
+                </div>
+
+                <div style={rowStyle}>
+                  <label style={labelStyle}>인명정보</label>
+                  <select
+                    value={personField}
+                    onChange={(event) => {
+                      const field = event.target.value as SearchField;
+                      setPersonField(field);
+                      selectField(field);
+                    }}
+                  >
+                    <option value="applicant">출원인(AP)</option>
+                  </select>
+                  <input
+                    aria-label="인명정보"
+                    value={rowValue(personField)}
+                    onFocus={() => searchField !== personField && selectField(personField)}
+                    onChange={(event) => setRowValue(personField, event.target.value)}
+                    placeholder="예) 대한민국, 삼성중공업"
+                  />
+                  <div style={andStyle}>AND</div>
+                  <span style={{ textAlign: "center", fontSize: "22px", color: "#6b7788" }}>＋</span>
+                </div>
+              </div>
+            </div>
+
+            <p style={{ margin: "10px 0 0", color: "#627084", fontSize: "13px" }}>
+              현재 수집 엔진은 한 번의 요청에서 하나의 검색 항목을 사용하므로, 입력한 행이 실제 검색 조건으로 적용됩니다.
+            </p>
+
+            <div className="form-grid three-columns" style={{ marginTop: "20px" }}>
               <div className="field-group">
                 <label htmlFor="dateFilterType">기간 기준</label>
                 <select
                   id="dateFilterType"
                   value={dateFilterType}
-                  onChange={(event) =>
-                    setDateFilterType(event.target.value as DateFilterType)
-                  }
+                  onChange={(event) => setDateFilterType(event.target.value as DateFilterType)}
                 >
                   <option value="none">기간 제한 없음</option>
                   <option value="application">출원일</option>
@@ -352,9 +449,7 @@ export default function RequestPage() {
                         onChange={(event) => setDateStartYear(event.target.value)}
                       >
                         {YEAR_OPTIONS.map((year) => (
-                          <option key={year} value={year}>
-                            {year}년
-                          </option>
+                          <option key={year} value={year}>{year}년</option>
                         ))}
                       </select>
                       <select
@@ -363,9 +458,7 @@ export default function RequestPage() {
                         onChange={(event) => setDateStartMonth(event.target.value)}
                       >
                         {MONTH_OPTIONS.map((month) => (
-                          <option key={month} value={month}>
-                            {month}월
-                          </option>
+                          <option key={month} value={month}>{month}월</option>
                         ))}
                       </select>
                     </div>
@@ -380,9 +473,7 @@ export default function RequestPage() {
                         onChange={(event) => setDateEndYear(event.target.value)}
                       >
                         {YEAR_OPTIONS.map((year) => (
-                          <option key={year} value={year}>
-                            {year}년
-                          </option>
+                          <option key={year} value={year}>{year}년</option>
                         ))}
                       </select>
                       <select
@@ -391,9 +482,7 @@ export default function RequestPage() {
                         onChange={(event) => setDateEndMonth(event.target.value)}
                       >
                         {MONTH_OPTIONS.map((month) => (
-                          <option key={month} value={month}>
-                            {month}월
-                          </option>
+                          <option key={month} value={month}>{month}월</option>
                         ))}
                       </select>
                     </div>
@@ -452,7 +541,6 @@ export default function RequestPage() {
           </div>
 
           {error && <p className="error">{error}</p>}
-
           <div className="form-actions right">
             <button type="submit">입력값 검토</button>
           </div>
@@ -478,8 +566,7 @@ export default function RequestPage() {
           </dl>
 
           <div className="notice subtle">
-            작업 등록 후에는 <strong>내 작업</strong>과 <strong>결과 장표</strong>
-            화면에서 입력 조건, 진행 상태, 수집 결과를 함께 확인할 수 있습니다.
+            작업 등록 후에는 <strong>내 작업</strong>과 <strong>결과 장표</strong> 화면에서 입력 조건, 진행 상태, 수집 결과를 함께 확인할 수 있습니다.
           </div>
 
           {error && <p className="error">{error}</p>}
