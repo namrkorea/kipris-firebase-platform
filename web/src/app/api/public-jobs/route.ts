@@ -31,6 +31,9 @@ export async function GET() {
         review_purpose: data.review_purpose ? String(data.review_purpose) : null,
         output_fields: Array.isArray(data.output_fields) ? data.output_fields : null,
         error_message: data.error_message ? String(data.error_message) : null,
+        dispatch_state: data.dispatch_state ? String(data.dispatch_state) : null,
+        dispatch_message: data.dispatch_message ? String(data.dispatch_message) : null,
+        dispatch_attempted_at: toIso(data.dispatch_attempted_at),
         created_at: toIso(data.created_at) ?? new Date(0).toISOString(),
       };
     });
