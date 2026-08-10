@@ -5,6 +5,9 @@ import { adminDb } from "../../../../../lib/firebase-admin";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const WORKFLOW_DISPATCH_URL =
+  "https://api.github.com/repos/namrkorea/kipris-firebase-platform/actions/workflows/kipris-worker.yml/dispatches";
+
 export async function POST(
   request: NextRequest,
   context: { params: Promise<{ id: string }> },
@@ -75,7 +78,7 @@ export async function POST(
 
     try {
       const response = await fetch(
-        "https://api.github.com/repos/namrkorea/kipris-firebase-platform/dispatches",
+        WORKFLOW_DISPATCH_URL,
         {
           method: "POST",
           headers: {
@@ -84,10 +87,7 @@ export async function POST(
             "Content-Type": "application/json",
             "X-GitHub-Api-Version": "2022-11-28",
           },
-          body: JSON.stringify({
-            event_type: "kipris-job-created",
-            client_payload: { job_id: id },
-          }),
+          body: JSON.stringify({ ref: "main" }),
           cache: "no-store",
           signal: AbortSignal.timeout(8000),
         },
@@ -101,6 +101,7 @@ export async function POST(
             dispatch_message: `GitHub Worker 즉시 실행 요청 실패 (${response.status})`,
             dispatch_attempted_at: now,
             dispatch_error_detail: detail,
+            dispatch_method: "workflow_dispatch",
             updated_at: now,
           },
           { merge: true },
@@ -122,6 +123,7 @@ export async function POST(
           dispatch_message: "GitHub Worker 즉시 실행 요청을 보냈습니다.",
           dispatch_attempted_at: now,
           dispatch_error_detail: null,
+          dispatch_method: "workflow_dispatch",
           updated_at: now,
         },
         { merge: true },
@@ -142,6 +144,7 @@ export async function POST(
           dispatch_message: "GitHub Worker 즉시 실행 요청 중 연결 오류가 발생했습니다.",
           dispatch_attempted_at: now,
           dispatch_error_detail: message.slice(0, 500),
+          dispatch_method: "workflow_dispatch",
           updated_at: now,
         },
         { merge: true },
