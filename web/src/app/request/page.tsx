@@ -18,22 +18,7 @@ type SearchField =
   | "publicationNumber"
   | "registerNumber";
 
-type UiSearchField =
-  | SearchField
-  | "abstract"
-  | "claims"
-  | "description"
-  | "fullText"
-  | "openNumber"
-  | "internationalApplicationNumber"
-  | "internationalOpenNumber"
-  | "cpcNumber"
-  | "inventor"
-  | "agent"
-  | "registrant"
-  | "exclusiveLicensee"
-  | "nonExclusiveLicensee"
-  | "finalOwner";
+type UiSearchField = SearchField;
 
 type Category = "word" | "content" | "number" | "class" | "person";
 type LogicalOperator = "AND" | "OR";
@@ -75,31 +60,17 @@ const CATEGORY_OPTIONS: Record<Category, FieldOption[]> = {
   word: [{ value: "word", label: "자유검색(전문)", supported: true }],
   content: [
     { value: "inventionTitle", label: "발명의명칭(TL)", supported: true },
-    { value: "abstract", label: "요약(AB)", supported: false },
-    { value: "claims", label: "청구범위(CL)", supported: false },
-    { value: "description", label: "명세서(DS)", supported: false },
-    { value: "fullText", label: "일괄(CT)", supported: false },
   ],
   number: [
     { value: "applicationNumber", label: "출원번호(AN)", supported: true },
     { value: "registerNumber", label: "등록번호(GN)", supported: true },
-    { value: "openNumber", label: "공개번호(OPN)", supported: false },
     { value: "publicationNumber", label: "공고번호(PN)", supported: true },
-    { value: "internationalApplicationNumber", label: "국제출원번호(IAN)", supported: false },
-    { value: "internationalOpenNumber", label: "국제공개번호(ION)", supported: false },
   ],
   class: [
     { value: "ipcNumber", label: "IPC", supported: true },
-    { value: "cpcNumber", label: "CPC", supported: false },
   ],
   person: [
     { value: "applicant", label: "출원인(AP)", supported: true },
-    { value: "inventor", label: "발명자(IN)", supported: false },
-    { value: "agent", label: "대리인(AG)", supported: false },
-    { value: "registrant", label: "등록권자(RG)", supported: false },
-    { value: "exclusiveLicensee", label: "전용실시권자(EL)", supported: false },
-    { value: "nonExclusiveLicensee", label: "통상실시권자(NL)", supported: false },
-    { value: "finalOwner", label: "최종권리자(TRH)", supported: false },
   ],
 };
 
@@ -424,7 +395,7 @@ export default function RequestPage() {
           <div className="form-section">
             <div className="section-heading">
               <h2>2. 검색 조건</h2>
-              <p>KIPRIS 화면처럼 분야별 드롭다운, AND/OR 선택, + 행 추가 방식을 적용했습니다.</p>
+              <p>현재 KIPRIS Open API에서 실제 검색 가능한 항목만 표시합니다.</p>
             </div>
 
             <div
@@ -437,7 +408,7 @@ export default function RequestPage() {
               }}
             >
               <div style={{ minWidth: "900px" }}>
-                {conditions.map((row, index) => {
+                {conditions.map((row) => {
                   const options = CATEGORY_OPTIONS[row.category];
                   const categoryRows = conditions.filter((item) => item.category === row.category);
                   const showCategoryLabel = categoryRows[0]?.id === row.id;
@@ -457,7 +428,7 @@ export default function RequestPage() {
                         >
                           {options.map((option) => (
                             <option key={option.value} value={option.value}>
-                              {option.label}{option.supported ? "" : " · 준비중"}
+                              {option.label}
                             </option>
                           ))}
                         </select>
@@ -498,7 +469,7 @@ export default function RequestPage() {
             </div>
 
             <p style={{ margin: "10px 0 0", color: "#627084", fontSize: "13px" }}>
-              + 버튼을 누르면 해당 분야의 드롭다운 순서에 따라 다음 항목이 추가됩니다. 추가된 행은 × 버튼으로 삭제할 수 있습니다.
+              + 버튼은 실제 검색 가능한 추가 항목이 있는 분야에서만 활성화됩니다.
             </p>
 
             <div className="form-grid three-columns" style={{ marginTop: "20px" }}>
