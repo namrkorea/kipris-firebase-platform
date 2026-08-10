@@ -110,24 +110,10 @@ export async function GET(
       );
     }
 
-    // 4. Firebase Storage에서 실제 PDF 확인
-    const file = adminBucket.file(storagePath);
-
-    const [exists] = await file.exists();
-
-    if (!exists) {
-      return NextResponse.json(
-        {
-          error: "Firebase Storage에서 PDF를 찾을 수 없습니다.",
-        },
-        { status: 404 },
-      );
-    }
-
-
+  // 4. Firebase Storage에서 실제 PDF 확인
     const applicationNumber = String(
       patent.application_number ?? "",
-      )
+    )
       .replace(/[^0-9A-Za-z_-]+/g, "")
       .trim();
 
@@ -138,20 +124,20 @@ export async function GET(
       applicationNumber
         ? `${applicationNumber}/${applicationNumber}.pdf`
         : "",
-      ].filter(Boolean),
-      ),
-  );
+    ].filter(Boolean),
+    ),
+    );
 
   let pdfFile: ReturnType<typeof adminBucket.file> | null = null;
 
   for (const candidatePath of candidatePaths) {
-    const candidateFile = adminBucket.file(candidatePath);
-    const [exists] = await candidateFile.exists();
+  const candidateFile = adminBucket.file(candidatePath);
+  const [exists] = await candidateFile.exists();
 
   if (exists) {
     pdfFile = candidateFile;
     break;
-    }
+  }
   }
 
   if (!pdfFile) {
@@ -160,12 +146,11 @@ export async function GET(
       error: "Firebase Storage에서 PDF를 찾을 수 없습니다.",
     },
     { status: 404 },
-   );
+    );
   }
 
-  const [pdfBuffer] = await pdfFile.download();
-    
-    // 5. PDF 다운로드
+// 5. PDF 다운로드
+    const [pdfBuffer] = await pdfFile.download();
   
 
     const originalName = String(
