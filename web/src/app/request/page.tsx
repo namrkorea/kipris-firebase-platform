@@ -18,7 +18,17 @@ type SearchField =
   | "publicationNumber"
   | "registerNumber";
 
+type DateFilterType = "none" | "application" | "registration";
 type Step = "input" | "review";
+
+const CURRENT_YEAR = new Date().getFullYear();
+const YEAR_OPTIONS = Array.from(
+  { length: CURRENT_YEAR - 1949 },
+  (_, index) => CURRENT_YEAR - index,
+);
+const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) =>
+  String(index + 1).padStart(2, "0"),
+);
 
 const OUTPUT_OPTIONS: Array<{
   value: OutputField;
@@ -62,13 +72,24 @@ const OUTPUT_OPTIONS: Array<{
   },
 ];
 
+function formatYearMonth(value: string): string {
+  if (!/^\d{6}$/.test(value)) return value;
+  return `${value.slice(0, 4)}.${value.slice(4, 6)}`;
+}
+
 export default function RequestPage() {
   const router = useRouter();
+  const currentMonth = String(new Date().getMonth() + 1).padStart(2, "0");
   const [step, setStep] = useState<Step>("input");
   const [reportTitle, setReportTitle] = useState("특허 검색·검토 결과");
   const [reviewPurpose, setReviewPurpose] = useState("");
   const [queryText, setQueryText] = useState("");
   const [searchField, setSearchField] = useState<SearchField>("word");
+  const [dateFilterType, setDateFilterType] = useState<DateFilterType>("none");
+  const [dateStartYear, setDateStartYear] = useState(String(CURRENT_YEAR - 5));
+  const [dateStartMonth, setDateStartMonth] = useState("01");
+  const [dateEndYear, setDateEndYear] = useState(String(CURRENT_YEAR));
+  const [dateEndMonth, setDateEndMonth] = useState(currentMonth);
   const [maxResults, setMaxResults] = useState(30);
   const [downloadPdf, setDownloadPdf] = useState(true);
   const [outputFields, setOutputFields] = useState<OutputField[]>(
@@ -77,12 +98,27 @@ export default function RequestPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const dateStartYm = `${dateStartYear}${dateStartMonth}`;
+  const dateEndYm = `${dateEndYear}${dateEndMonth}`;
+  const dateFilterLabel =
+    dateFilterType === "application"
+      ? "출원일"
+      : dateFilterType === "registration"
+        ? "등록일"
+        : "기간 제한 없음";
+
   const reviewRows = useMemo(
     () => [
       ["결과표 제목", reportTitle.trim() || "특허 검색·검토 결과"],
       ["검토 목적", reviewPurpose.trim() || "미입력"],
       ["검색 항목", searchFieldLabel(searchField)],
       ["검색어", queryText.trim() || "미입력"],
+      [
+        "검색 기간",
+        dateFilterType === "none"
+          ? "기간 제한 없음"
+          : `${dateFilterLabel} ${formatYearMonth(dateStartYm)} ~ ${formatYearMonth(dateEndYm)}`,
+      ],
       ["최대 수집 건수", `${maxResults}건`],
       ["공개전문 PDF", downloadPdf ? "수집·저장" : "수집하지 않음"],
       [
@@ -97,6 +133,10 @@ export default function RequestPage() {
       reviewPurpose,
       searchField,
       queryText,
+      dateFilterType,
+      dateFilterLabel,
+      dateStartYm,
+      dateEndYm,
       maxResults,
       downloadPdf,
       outputFields,
@@ -115,6 +155,10 @@ export default function RequestPage() {
     }
     if (reviewPurpose.trim().length > 500) {
       setError("검토 목적은 500자 이하로 입력하세요.");
+      return false;
+    }
+    if (dateFilterType !== "none" && dateStartYm > dateEndYm) {
+      setError("검색 기간의 시작 연월이 종료 연월보다 늦습니다.");
       return false;
     }
     return true;
@@ -152,6 +196,9 @@ export default function RequestPage() {
         body: JSON.stringify({
           queryText: query,
           searchField,
+          dateFilterType,
+          dateStartYm: dateFilterType === "none" ? "" : dateStartYm,
+          dateEndYm: dateFilterType === "none" ? "" : dateEndYm,
           maxResults,
           downloadPdf,
           reportTitle: reportTitle.trim() || "특허 검색·검토 결과",
@@ -278,6 +325,81 @@ export default function RequestPage() {
                   placeholder="예: FLNG, LNG 저장탱크, 삼성중공업"
                 />
               </div>
+
+              <div className="field-group">
+                <label htmlFor="dateFilterType">기간 기준</label>
+                <select
+                  id="dateFilterType"
+                  value={dateFilterType}
+                  onChange={(event) =>
+                    setDateFilterType(event.target.value as DateFilterType)
+                  }
+                >
+                  <option value="none">기간 제한 없음</option>
+                  <option value="application">출원일</option>
+                  <option value="registration">등록일</option>
+                </select>
+              </div>
+
+              {dateFilterType !== "none" && (
+                <>
+                  <div className="field-group">
+                    <label htmlFor="dateStartYear">시작 연월</label>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <select
+                        id="dateStartYear"
+                        value={dateStartYear}
+                        onChange={(event) => setDateStartYear(event.target.value)}
+                      >
+                        {YEAR_OPTIONS.map((year) => (
+                          <option key={year} value={year}>
+                            {year}년
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="시작 월"
+                        value={dateStartMonth}
+                        onChange={(event) => setDateStartMonth(event.target.value)}
+                      >
+                        {MONTH_OPTIONS.map((month) => (
+                          <option key={month} value={month}>
+                            {month}월
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="field-group">
+                    <label htmlFor="dateEndYear">종료 연월</label>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <select
+                        id="dateEndYear"
+                        value={dateEndYear}
+                        onChange={(event) => setDateEndYear(event.target.value)}
+                      >
+                        {YEAR_OPTIONS.map((year) => (
+                          <option key={year} value={year}>
+                            {year}년
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="종료 월"
+                        value={dateEndMonth}
+                        onChange={(event) => setDateEndMonth(event.target.value)}
+                      >
+                        {MONTH_OPTIONS.map((month) => (
+                          <option key={month} value={month}>
+                            {month}월
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="field-group">
                 <label htmlFor="maxResults">최대 수집 건수</label>
