@@ -5,6 +5,12 @@ import sys
 from typing import Any
 
 from kipris_client import KiprisError
+from kipris_usage import install_kipris_usage_counter
+
+# Worker 모듈이 KIPRIS 클라이언트를 만들기 전에 requests.Session.get을 감싸서
+# 실제 KIPRIS Open API 호출 횟수를 Firestore에 월별 누적합니다.
+install_kipris_usage_counter()
+
 from worker import claim_next_job, fail_job, logger, process_job
 
 
