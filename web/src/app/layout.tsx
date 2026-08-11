@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import AiPatentCompareWidget from "./AiPatentCompareWidget";
+import KiprisUsageIndicator from "./KiprisUsageIndicator";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -26,6 +27,7 @@ export default function RootLayout({
               <Link href="/request">수집 요청</Link>
               <Link href="/jobs">요청·결과</Link>
             </nav>
+            <KiprisUsageIndicator />
           </div>
         </header>
         <main className="page-shell">{children}</main>
