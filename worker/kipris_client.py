@@ -223,6 +223,24 @@ class KiprisClient:
     def _service_limit_delay(self, attempt: int) -> float:
         return min(30.0 * (2 ** max(attempt - 1, 0)) + random.uniform(0, 2.0), 120.0)
 
+    def _safe_response_preview(self, text: str, limit: int = 240) -> str:
+        preview = " ".join(str(text or "").split())
+        if self.config.service_key:
+            preview = preview.replace(self.config.service_key, "***")
+        if len(preview) > limit:
+            preview = preview[:limit] + "..."
+        return preview or "(빈 응답)"
+
+    def _non_xml_error(self, response: requests.Response, text: str) -> KiprisError:
+        content_type = response.headers.get("content-type", "unknown")
+        preview = self._safe_response_preview(text)
+        return KiprisError(
+            "KIPRIS 비정상 응답 | "
+            f"HTTP {response.status_code} | "
+            f"content-type={content_type} | "
+            f"응답={preview}"
+        )
+
     def _get_xml(self, url: str, params: dict[str, Any]) -> tuple[ET.Element, str]:
         query = {**params, "ServiceKey": self.config.service_key}
         last_error: Exception | None = None
@@ -247,12 +265,12 @@ class KiprisClient:
 
                 text = response.text.strip()
                 if not text:
-                    raise KiprisError("KIPRIS가 빈 응답을 반환했습니다.")
+                    raise self._non_xml_error(response, text)
 
                 try:
                     root = ET.fromstring(text)
                 except ET.ParseError as exc:
-                    raise KiprisError("KIPRIS XML을 해석할 수 없습니다.") from exc
+                    raise self._non_xml_error(response, text) from exc
 
                 result_code = _find_text(root, "resultCode")
                 result_message = _find_text(root, "resultMsg")
